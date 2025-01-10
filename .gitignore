@@ -8,3 +8,5 @@ chromedriver.exe
 overallBossResultsWTimings/
 classTimings/
 transformed_data_w_timings.csv
+transformed_data_w_timings_v2.csv
+transformed_data_w_timings_v3.csv
