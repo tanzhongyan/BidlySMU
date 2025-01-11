@@ -4,8 +4,6 @@
 
 ---
 
-## **1. Implementation Guide**
-
 <div style="background-color:#DFFFD6; padding:12px; border-radius:5px; border: 1px solid #228B22;">
   <h2 style="color:#006400;">✅ Looking to Implement This? ✅</h2>
   <p>🚀 <strong>Use the latest model with <a href="example_prediction.ipynb">example_prediction.ipynb</a>!</strong></p>
@@ -17,31 +15,11 @@
   <p>👉 <a href="example_prediction.ipynb"><strong>Go to Example Prediction Notebook</strong></a></p>
 </div>
 
-### **Step 1: Using the Model**
-The project is designed to predict bid points with minimal setup. Follow these steps:
-
-1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/tanzhongyan/BidlySMU
-   cd BidlySMU
-   ```
-
-2. **Install Required Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Set Up Environment**:
-  Ensure you're using **Python 3.8.20**. This ensures compatibility with the dependencies.
-
-4. **Run the Model**:
-  - **[example_prediction.ipynb](example_prediction.ipynb)**: Recommended for using the latest **V3 model**.
-
-### **Step 2: Accessing the Enhanced Data**
+<br>
 
 <div style="background-color:#FFD700; padding:15px; border-radius:5px; border: 2px solid #FF4500;">
     
-  <h1 style="color:#8B0000;">⚠️🚨 SCRAPE THIS DATA AT YOUR OWN RISK 🚨⚠️</h1>
+  <h2 style="color:#8B0000;">⚠️🚨 SCRAPE THIS DATA AT YOUR OWN RISK 🚨⚠️</h2>
   
   <p><strong>📌 If you need the data, please contact me directly.</strong> Only available for **existing students**.</p>
 
@@ -49,17 +27,6 @@ The project is designed to predict bid points with minimal setup. Follow these s
   <p>📨 <strong>Reach out to me for access</strong> instead of scraping manually.</p>
 
 </div>
-
-- **Scraped Class Timings Data**: Scraping BOSS data for class timings (as done in **V2_01_selenium_BossResults.ipynb**) is **time and resource-intensive**. It involves:
-  - Running a Selenium bot to scrape class timings.
-  - Processing and merging data into a usable format.
-
-  **Recommendation**: Avoid re-running the scraping bot. If you are an SMU student with a valid academic purpose, you may request access to the pre-scraped dataset from the project author.
-
-  **How to Request**:
-  1. Contact me with your request details.
-  2. Provide your academic rationale and SMU affiliation.
-  3. If approved, you’ll receive access to the processed dataset for your use.
 
 ---
 
@@ -94,11 +61,11 @@ The project is designed to predict bid points with minimal setup. Follow these s
 
 ## **4. Key Findings**
 
-### **V3 Summary**
+### **V3 Improvements**
 1. No re-training required—models are pre-trained and available as `.cbm` files.
 2. Fixed bugs such as dependency on future values and outlier removal.
 
-### **V2 Summary**
+### **V2 Enhancements**
 1. Adding class timings significantly reduces prediction errors.
 2. Additional features lead to diminishing returns beyond a certain point.
 3. Adding safety factors or bootstrapping confidence intervals could improve predictions but requires more computation.
