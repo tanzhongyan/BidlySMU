@@ -6,6 +6,17 @@
 
 ## **1. Implementation Guide**
 
+<div style="background-color:#DFFFD6; padding:12px; border-radius:5px; border: 1px solid #228B22;">
+  <h2 style="color:#006400;">✅ Looking to Implement This? ✅</h2>
+  <p>🚀 <strong>Use the latest model with <a href="example_prediction.ipynb">example_prediction.ipynb</a>!</strong></p>
+  <ul>
+    <li>📌 **Pre-trained CatBoost model (`.cbm`) included for instant predictions.**</li>
+    <li>🔧 **Step-by-step instructions available.**</li>
+    <li>⚡ **No re-training required—just load and predict!**</li>
+  </ul>
+  <p>👉 <a href="example_prediction.ipynb"><strong>Go to Example Prediction Notebook</strong></a></p>
+</div>
+
 ### **Step 1: Using the Model**
 The project is designed to predict bid points with minimal setup. Follow these steps:
 
@@ -27,6 +38,18 @@ The project is designed to predict bid points with minimal setup. Follow these s
   - **[example_prediction.ipynb](example_prediction.ipynb)**: Recommended for using the latest **V3 model**.
 
 ### **Step 2: Accessing the Enhanced Data**
+
+<div style="background-color:#FFD700; padding:15px; border-radius:5px; border: 2px solid #FF4500;">
+    
+  <h1 style="color:#8B0000;">⚠️🚨 SCRAPE THIS DATA AT YOUR OWN RISK 🚨⚠️</h1>
+  
+  <p><strong>📌 If you need the data, please contact me directly.</strong> Only available for **existing students**.</p>
+
+  <h3>🔗 📩 How to Get the Data?</h3>
+  <p>📨 <strong>Reach out to me for access</strong> instead of scraping manually.</p>
+
+</div>
+
 - **Scraped Class Timings Data**: Scraping BOSS data for class timings (as done in **V2_01_selenium_BossResults.ipynb**) is **time and resource-intensive**. It involves:
   - Running a Selenium bot to scrape class timings.
   - Processing and merging data into a usable format.
