@@ -6,3 +6,4 @@ scikit-learn==1.6.1
 catboost==1.2.8
 selenium==4.31.0
 scipy==1.15.2
+xlrd==2.0.1
