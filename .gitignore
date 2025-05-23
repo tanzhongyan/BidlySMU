@@ -10,3 +10,8 @@ classTimings/
 transformed_data_w_timings.csv
 transformed_data_w_timings_v2.csv
 transformed_data_w_timings_v3.csv
+all_dropped_rows.csv
+classTimingsFull
+scraped_filepaths.csv
+db_cache/
+test_output/
