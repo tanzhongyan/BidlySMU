@@ -15,3 +15,5 @@ classTimingsFull
 scraped_filepaths.csv
 db_cache/
 test_output/
+extracted_data/
+.env
