@@ -17,3 +17,14 @@ db_cache/
 test_output/
 extracted_data/
 .env
+scraped_professors.csv
+ai_professor_lookup_table.csv
+updated_professor_lookup_table*
+smu*
+new*
+consolidated*
+professor*
+course_bid_tuning/
+V4_01_selenium_BossResults copy.ipynb
+script_input/
+script_output/
