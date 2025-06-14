@@ -7,5 +7,8 @@ catboost==1.2.8
 selenium==4.31.0
 scipy==1.15.2
 xlrd==2.0.1
-psycopg2
+openpyxl
+psycopg2-binary
 webdriver-manager
+pywin32
+python-dotenv
