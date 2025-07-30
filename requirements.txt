@@ -12,3 +12,4 @@ psycopg2-binary
 webdriver-manager
 pywin32
 python-dotenv
+thefuzz
