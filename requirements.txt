@@ -13,3 +13,4 @@ webdriver-manager
 pywin32
 python-dotenv
 thefuzz
+google-genai
