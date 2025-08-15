@@ -2,3 +2,5 @@ db_cache/
 script_input/
 script_output/
 .env
+logs/
+__pycache__/
