@@ -494,6 +494,75 @@ def load_or_cache_data(connection, cache_dir):
     
     return data_cache
 
+def upsert_df(conn, df: pd.DataFrame, table_name: str, index_elements: List[str]):
+    """
+    Efficiently upserts a DataFrame into a PostgreSQL table using INSERT ON CONFLICT.
+    """
+    from psycopg2.extras import execute_values
+    
+    if df.empty:
+        return
+
+    # Prepare columns for the SQL query
+    cols = df.columns.tolist()
+    update_cols = [col for col in cols if col not in index_elements]
+    
+    if not update_cols:
+        print(f"⚠️ No update columns for upserting into {table_name}. Skipping.")
+        return
+        
+    # Construct the SQL query
+    sql_stub = f"""
+        INSERT INTO "{table_name}" ({', '.join(f'"{c}"' for c in cols)})
+        VALUES %s
+        ON CONFLICT ({', '.join(f'"{c}"' for c in index_elements)})
+        DO UPDATE SET {', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])};
+    """
+    
+    cursor = conn.cursor()
+    try:
+        # Convert dataframe to a list of tuples for execute_values
+        values = [tuple(x) for x in df.to_numpy()]
+        execute_values(cursor, sql_stub, values, page_size=1000)
+        # The commit and rollback are now handled by the main execution block
+        print(f"✅ Queued {len(df)} records for upsert into {table_name}.")
+    except Exception as e:
+        print(f"❌ Error during upsert to {table_name}: {e}")
+        raise # Re-raise to trigger the main rollback
+    finally:
+        cursor.close()
+
+def upsert_bid_predictions_to_db(connection, bid_predictions_df: pd.DataFrame):
+    """
+    Upserts the bid predictions DataFrame using the provided database connection.
+    Transaction is managed by the caller.
+    """
+    if bid_predictions_df.empty:
+        print("No bid predictions to upload. Skipping database operation.")
+        return
+
+    # Prepare DataFrame for DB ingestion by creating a copy
+    df_to_upsert = bid_predictions_df.copy()
+    
+    # Rename columns to match the Prisma schema (camelCase)
+    df_to_upsert.rename(columns={
+        'class_id': 'classId',
+        'bid_window_id': 'bidWindowId',
+        'model_version': 'modelVersion',
+        'clf_has_bids_prob': 'clfHasBidsProbability',
+        'clf_confidence_score': 'clfConfidenceScore',
+        'median_predicted': 'medianPredicted',
+        'median_uncertainty': 'medianUncertainty',
+        'min_predicted': 'minPredicted',
+        'min_uncertainty': 'minUncertainty'
+    }, inplace=True)
+    
+    # Add createdAt timestamp
+    df_to_upsert['createdAt'] = datetime.now()
+
+    # Call the generic upsert helper
+    upsert_df(connection, df_to_upsert, 'BidPrediction', ['classId', 'bidWindowId'])
+
 def prepare_prediction_data(raw_data_path='script_input/raw_data.xlsx', connection=None, db_cache=None):
     """Prepare data for prediction from raw_data.xlsx with time-based bidding window and database cache check"""
     from datetime import datetime
@@ -1516,9 +1585,14 @@ if __name__ == "__main__":
     else:
         safety_factor_df = pd.DataFrame()
 
-    # Save results
+    # === SAVING RESULTS (FILES AND DATABASE) ===
+    print(f"\n{'='*60}")
+    print("FINALIZING AND SAVING RESULTS")
+    print(f"{'='*60}")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # --- Step 1: Save all artifacts to local files as originally intended ---
     if not bid_predictions_df.empty:
         bid_predictions_df.to_csv(output_dir / f'bid_predictions{timestamp}.csv', index=False)
         print(f"💾 Saved {len(bid_predictions_df)} bid predictions")
@@ -1528,8 +1602,51 @@ if __name__ == "__main__":
         print(f"💾 Saved {len(dataset_predictions_df)} dataset predictions")
 
     if not safety_factor_df.empty:
-        safety_factor_df.to_csv(output_dir / f'safety_factor_table{timestamp}.csv', index=False)
-        print(f"💾 Saved {len(safety_factor_df)} safety factor entries")
+        safety_factor_df.to_csv(output_dir / f'safety_factor_table_{timestamp}.csv', index=False)
+        print(f"💾 Saved {len(safety_factor_df)} safety factor entries to CSV")
+
+    if 'all_transformed_data' in locals() and all_transformed_data:
+        final_transformed_df = pd.concat(all_transformed_data, ignore_index=True)
+        id_cols = ['record_key', 'course_code', 'section', 'acad_term_id', 'bidding_window']
+        feature_cols = [col for col in final_transformed_df.columns if col not in id_cols]
+        final_transformed_df = final_transformed_df[id_cols + feature_cols]
+        transformed_output_path = output_dir / f'transformed_features_{timestamp}.csv'
+        final_transformed_df.to_csv(transformed_output_path, index=False)
+        print(f"💾 Consolidated transformed features saved to: {transformed_output_path}")
+
+    if 'all_metadata_records' in locals() and all_metadata_records:
+        metadata_output_path = output_dir / f'transformation_metadata_{timestamp}.json'
+        with open(metadata_output_path, 'w') as f:
+            json.dump(all_metadata_records, f, indent=2)
+        print(f"📋 Consolidated metadata saved to: {metadata_output_path}")
+    
+    # --- Step 2: Ingest the bid_predictions_df into the database within a single transaction ---
+    db_connection = None
+    try:
+        print("\n--- Starting Database Ingestion ---")
+        db_connection = connect_database()
+        if not db_connection:
+            raise Exception("Failed to initiate database connection.")
+        
+        # The main script transaction starts here
+        print("📦 Transaction started.")
+        upsert_bid_predictions_to_db(db_connection, bid_predictions_df)
+        
+        # If we reach here without an error, commit the transaction
+        db_connection.commit()
+        print("\n🎉 All database operations successful. Transaction committed.")
+
+    except Exception as e:
+        print(f"❌ An error occurred during the database save process: {e}")
+        if db_connection:
+            db_connection.rollback()
+            print("❌ The transaction has been rolled back. No data was saved to the database.")
+        sys.exit(1)
+    finally:
+        if db_connection:
+            db_connection.close()
+            print("🔒 Database connection closed.")
+
 
     # Create comprehensive summary
     summary = {

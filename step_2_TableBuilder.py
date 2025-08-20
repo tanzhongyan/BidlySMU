@@ -217,22 +217,26 @@ class TableBuilder:
             logger.warning("⚠️ GEMINI_API_KEY not found. LLM normalization will be skipped.")
 
         # Initialize database connection
-        self.engine = None 
+        self.engine = None
+        self.db_connection = None
+        self.db_transaction = None
 
     def connect_database(self):
-        """Connect to PostgreSQL database using SQLAlchemy"""
+        """Connect to PostgreSQL database using SQLAlchemy and begin a transaction."""
         try:
-            # Create a database URL from the loaded db_config dictionary
             db_url = (
                 f"postgresql+psycopg2://{self.db_config['user']}:{self.db_config['password']}"
                 f"@{self.db_config['host']}:{self.db_config['port']}/{self.db_config['database']}"
             )
             self.engine = create_engine(db_url)
+            self.db_connection = self.engine.connect()
+            self.db_transaction = self.db_connection.begin()  # Start a transaction
             
-            logger.info("✅ Database engine created successfully")
+            logger.info("✅ Database connection established and transaction started.")
             return True
         except Exception as e:
-            logger.error(f"❌ Database engine creation failed: {e}")
+            logger.error(f"❌ Database connection failed: {e}")
+            traceback.print_exc()
             return False
 
     def load_or_cache_data(self):
@@ -502,6 +506,83 @@ class TableBuilder:
         except Exception as e:
             logger.error(f"❌ Failed to load raw data: {e}")
             return False
+
+    def _execute_db_operations(self):
+        """Executes all collected INSERT, UPDATE, and UPSERT operations within the transaction."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy import text
+        from sqlalchemy.exc import SQLAlchemyError
+
+        logger.info("Executing database operations...")
+        conn = self.db_connection
+
+        try:
+            # Helper for DataFrame to dictionary conversion, handling NaN
+            def df_to_records(df):
+                return df.where(pd.notna(df), None).to_dict('records')
+
+            # 1. Simple INSERTS
+            insert_map = {
+                'professors': self.new_professors,
+                'courses': self.new_courses,
+                'acad_term': self.new_acad_terms,
+                'classes': self.new_classes,
+                'class_timing': self.new_class_timings,
+                'class_exam_timing': self.new_class_exam_timings,
+                'bid_window': self.new_bid_windows
+            }
+            for table_name, data_list in insert_map.items():
+                if data_list:
+                    df = pd.DataFrame(data_list)
+                    logger.info(f"Inserting {len(df)} records into {table_name}...")
+                    # Use pandas to_sql for efficient bulk inserts
+                    df.to_sql(table_name, conn, if_exists='append', index=False, chunksize=1000)
+
+            # 2. UPDATES
+            def execute_update(table, records):
+                logger.info(f"Updating {len(records)} records in {table}...")
+                for record in records:
+                    record_id = record.pop('id')
+                    # Using SQLAlchemy text to prevent SQL injection
+                    stmt = text(f"UPDATE {table} SET {', '.join([f'{k} = :{k}' for k in record.keys()])} WHERE id = :id")
+                    conn.execute(stmt, {**record, 'id': record_id})
+            
+            if self.update_courses:
+                execute_update('courses', self.update_courses)
+            if hasattr(self, 'update_classes') and self.update_classes:
+                execute_update('classes', self.update_classes)
+            if self.update_professors:
+                logger.info(f"Updating {len(self.update_professors)} records in professors...")
+                for record in self.update_professors:
+                    record_id = record.pop('id')
+                    # boss_aliases is a text[] in postgres, format correctly
+                    aliases = json.loads(record['boss_aliases'])
+                    stmt = text("UPDATE professors SET boss_aliases = :boss_aliases WHERE id = :id")
+                    conn.execute(stmt, {'boss_aliases': aliases, 'id': record_id})
+            
+            # 3. UPSERTS (INSERT ON CONFLICT)
+            def execute_upsert(table, records, index_elements):
+                if not records: return
+                logger.info(f"Upserting {len(records)} records into {table}...")
+                stmt = pg_insert(text(table)).values(records)
+                update_cols = {col.name: col for col in stmt.excluded if col.name not in index_elements}
+                stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=update_cols)
+                conn.execute(stmt)
+
+            if self.new_class_availability:
+                execute_upsert('class_availability', df_to_records(pd.DataFrame(self.new_class_availability)), ['class_id', 'bid_window_id'])
+            
+            all_bid_results = self.new_bid_result + getattr(self, 'update_bid_result', [])
+            if all_bid_results:
+                execute_upsert('bid_result', df_to_records(pd.DataFrame(all_bid_results)), ['bid_window_id', 'class_id'])
+
+            logger.info("✅ Database operations executed successfully within transaction.")
+            return True
+
+        except (SQLAlchemyError, Exception) as e:
+            logger.error(f"❌ Error during database operations: {e}")
+            traceback.print_exc()
+            raise # Re-raise the exception to trigger a rollback
 
     def _normalize_professor_name_fallback(self, name: str) -> Tuple[str, str]:
         """
@@ -4645,46 +4726,51 @@ class TableBuilder:
         return normalized_map
     
 if __name__ == "__main__":
-    # Initialize the TableBuilder
     builder = TableBuilder()
-
-    # --- Phase 1 ---
-    print("--- Running Phase 1: Professors and Courses ---")
-    phase1_success = builder.run_phase1_professors_and_courses()
     
-    # GUARD: Check if Phase 1 succeeded before continuing
-    if not phase1_success:
-        print("❌ Phase 1 failed. Halting execution.")
-        sys.exit(1) # Stop the script immediately
-    
-    print("✅ Phase 1 completed successfully. Please review the files before proceeding.")
-    # NOTE: You would manually stop here to review files, then re-run the script for Phase 2.
-    # If using the interactive menu from the previous answer, this flow is handled automatically.
-
-    # --- Phase 2 ---
-    print("\n--- Running Phase 2: Classes and Timings ---")
-    phase2_success = builder.run_phase2_remaining_tables()
-
-    # GUARD: Check if Phase 2 succeeded
-    if not phase2_success:
-        print("❌ Phase 2 failed. Halting execution.")
+    # Establish database connection and start transaction
+    if not builder.connect_database():
         sys.exit(1)
+
+    try:
+        # --- Phase 1 ---
+        print("--- Running Phase 1: Professors and Courses ---")
+        if not builder.run_phase1_professors_and_courses():
+            raise Exception("Phase 1 failed.")
+        print("✅ Phase 1 completed successfully.")
+
+        # --- Phase 2 ---
+        print("\n--- Running Phase 2: Classes and Timings ---")
+        if not builder.run_phase2_remaining_tables():
+            raise Exception("Phase 2 failed.")
+        print("✅ Phase 2 completed successfully.")
         
-    print("✅ Phase 2 completed successfully.")
-    
-    # --- Faculty Assignment ---
-    print("\n--- Running Faculty Assignment ---")
-    builder.assign_course_faculties()
-    print("✅ Faculty assignment completed.")
-    
-    # --- Phase 3 ---
-    print("\n--- Running Phase 3: Bidding Data ---")
-    phase3_success = builder.run_phase3_boss_processing()
+        # --- Faculty Assignment (Interactive Step) ---
+        print("\n--- Running Faculty Assignment ---")
+        builder.assign_course_faculties()
+        print("✅ Faculty assignment completed.")
+        
+        # --- Phase 3 ---
+        print("\n--- Running Phase 3: Bidding Data ---")
+        if not builder.run_phase3_boss_processing():
+            raise Exception("Phase 3 failed.")
+        print("✅ Phase 3 completed successfully.")
 
-    # GUARD: Check if Phase 3 succeeded
-    if not phase3_success:
-        print("❌ Phase 3 failed. Halting execution.")
+        # --- Final Step: Execute all DB operations ---
+        print("\n--- Executing database writes ---")
+        builder._execute_db_operations()
+
+        # If all steps are successful, commit the transaction
+        builder.db_transaction.commit()
+        print("\n🎉 All phases completed successfully and transaction committed!")
+
+    except Exception as e:
+        print(f"❌ An error occurred: {e}. Rolling back transaction.")
+        if builder.db_transaction:
+            builder.db_transaction.rollback()
         sys.exit(1)
-
-    print("\n🎉 All phases completed successfully!")
-    builder.close_connection()
+    
+    finally:
+        if builder.db_connection:
+            builder.db_connection.close()
+            print("🔒 Database connection closed.")
