@@ -1,5 +1,19 @@
 from datetime import datetime
 
+# ============================================================================
+# STORAGE MODE CONFIGURATION
+# ============================================================================
+# Choose how scraped data should be stored:
+# - 'excel': Save to Excel files (step_1b → raw_data.xlsx, step_1c → overallBossResults/*.xlsx)
+#            Then use step_2 to process and upload to database
+# - 'database': Directly insert to database (bypasses Excel files, faster for large datasets)
+#
+# Default: 'excel' (recommended for easier debugging and manual inspection)
+STORAGE_MODE = 'excel'  # Options: 'excel' or 'database'
+
+# ============================================================================
+# ACADEMIC TERM CONFIGURATION
+# ============================================================================
 # Define the academic term range you want to scrape or process.
 # For a single term, set both START and END to the same value.
 START_AY_TERM = '2025-26_T1'
