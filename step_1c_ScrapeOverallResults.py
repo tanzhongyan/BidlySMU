@@ -1059,6 +1059,190 @@ class ScrapeOverallResults:
         finally:
             self.close()
 
+    def detect_missing_windows(self, term):
+        """
+        Detect which bidding windows are missing from the Excel file for a given term.
+        Uses BIDDING_SCHEDULES from config.py to identify windows that should exist.
+
+        Args:
+            term (str): Term in short format (e.g., '2025-26_T1')
+
+        Returns:
+            list: List of tuples (round, window, window_name) for missing windows
+        """
+        try:
+            self.logger.info(f"Detecting missing windows for term: {term}")
+
+            # Get bidding schedule for this term
+            if term not in BIDDING_SCHEDULES:
+                self.logger.warning(f"No bidding schedule found for term: {term}")
+                return []
+
+            schedule = BIDDING_SCHEDULES[term]
+            current_time = datetime.now()
+
+            # Get list of past windows that should have been scraped
+            expected_windows = []
+            for schedule_time, window_name, folder_suffix in schedule:
+                if schedule_time < current_time:
+                    # Parse window name to extract round and window
+                    normalized = window_name.replace("Incoming Exchange ", "").replace("Incoming Freshmen ", "")
+                    normalized = normalized.replace("Rnd ", "Round ").replace("Win ", "Window ")
+
+                    match = re.search(r'Round\s+(\d+[A-Z]*)\s+Window\s+(\d+)', normalized)
+                    if match:
+                        round_val = match.group(1)
+                        window_val = match.group(2)
+                        expected_windows.append((round_val, window_val, window_name))
+                    else:
+                        self.logger.warning(f"Could not parse window name: {window_name}")
+
+            self.logger.info(f"Expected {len(expected_windows)} past windows for {term}")
+
+            # Check which windows exist in the Excel file
+            excel_filename = self._generate_filename(self._transform_term_format(term))
+            excel_path = os.path.join("./script_input/overallBossResults", excel_filename)
+
+            existing_windows = set()
+            if os.path.exists(excel_path):
+                try:
+                    df = pd.read_excel(excel_path, engine='openpyxl')
+                    if 'Bidding Window' in df.columns:
+                        existing_windows = set(df['Bidding Window'].dropna().unique())
+                        self.logger.info(f"Found {len(existing_windows)} unique windows in Excel file")
+                except Exception as e:
+                    self.logger.warning(f"Could not read Excel file: {e}")
+            else:
+                self.logger.info(f"Excel file does not exist: {excel_path}")
+
+            # Determine missing windows
+            missing_windows = []
+            for round_val, window_val, window_name in expected_windows:
+                # Check if this window exists in the Excel data
+                if window_name not in existing_windows:
+                    missing_windows.append((round_val, window_val, window_name))
+                    self.logger.info(f"  Missing: {window_name}")
+                else:
+                    self.logger.debug(f"  Found: {window_name}")
+
+            self.logger.info(f"Total missing windows: {len(missing_windows)}")
+            return missing_windows
+
+        except Exception as e:
+            self.logger.error(f"Error detecting missing windows: {e}")
+            return []
+
+    def run_with_catchup(self, term, output_dir="./script_input/overallBossResults", auto_detect=True):
+        """
+        Run scraper with intelligent catch-up capability.
+        Automatically detects and scrapes all missing bidding windows for a term.
+
+        Args:
+            term (str): Term in short format (e.g., '2025-26_T1')
+            output_dir (str): Directory to save Excel files
+            auto_detect (bool): Whether to auto-detect missing windows
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.logger.info("="*70)
+            self.logger.info(f"CATCH-UP SCRAPER FOR {term}")
+            self.logger.info("="*70)
+
+            # Detect missing windows
+            missing_windows = []
+            if auto_detect:
+                missing_windows = self.detect_missing_windows(term)
+
+                if not missing_windows:
+                    self.logger.info("No missing windows detected! All windows are up to date.")
+                    return True
+
+                self.logger.info(f"\nFound {len(missing_windows)} missing windows to catch up:")
+                for i, (round_val, window_val, window_name) in enumerate(missing_windows, 1):
+                    self.logger.info(f"  {i}. {window_name} (Round {round_val}, Window {window_val})")
+            else:
+                # If not auto-detecting, just scrape current window
+                detected_round, detected_window = self._determine_current_bidding_phase()
+                if detected_round and detected_window:
+                    # Get window name from schedule
+                    window_name = f"Round {detected_round} Window {detected_window}"
+                    missing_windows = [(detected_round, detected_window, window_name)]
+                else:
+                    self.logger.error("Could not determine current bidding phase")
+                    return False
+
+            # Transform term to website format
+            website_term = self._transform_term_format(term)
+
+            # Setup driver and login once
+            self.logger.info("\n" + "="*70)
+            self.logger.info("INITIALIZING BROWSER AND LOGIN")
+            self.logger.info("="*70)
+
+            self._setup_driver()
+            self.driver.get("https://boss.intranet.smu.edu.sg/")
+            self.wait_for_manual_login()
+
+            # Scrape each missing window
+            total_scraped = 0
+            successful_windows = 0
+
+            for i, (round_val, window_val, window_name) in enumerate(missing_windows, 1):
+                try:
+                    self.logger.info("\n" + "="*70)
+                    self.logger.info(f"SCRAPING WINDOW {i}/{len(missing_windows)}: {window_name}")
+                    self.logger.info("="*70)
+
+                    # Scrape this specific window
+                    data = self.scrape_term_data(
+                        term=website_term,
+                        bid_round=round_val,
+                        bid_window=window_val,
+                        output_dir=output_dir
+                    )
+
+                    if data:
+                        total_scraped += len(data)
+                        successful_windows += 1
+                        self.logger.info(f"✅ Successfully scraped {len(data)} records for {window_name}")
+                    else:
+                        self.logger.warning(f"⚠️ No data found for {window_name}")
+
+                    # Rate limiting between windows
+                    if i < len(missing_windows):
+                        self.logger.info(f"Waiting {self.delay} seconds before next window...")
+                        time.sleep(self.delay)
+
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to scrape {window_name}: {e}")
+                    # Continue with next window instead of failing completely
+                    continue
+
+            # Final summary
+            self.logger.info("\n" + "="*70)
+            self.logger.info("CATCH-UP SUMMARY")
+            self.logger.info("="*70)
+            self.logger.info(f"Total windows processed: {successful_windows}/{len(missing_windows)}")
+            self.logger.info(f"Total records scraped: {total_scraped}")
+
+            if successful_windows == len(missing_windows):
+                self.logger.info("✅ All missing windows caught up successfully!")
+                return True
+            elif successful_windows > 0:
+                self.logger.warning(f"⚠️ Partial success: {successful_windows}/{len(missing_windows)} windows")
+                return True
+            else:
+                self.logger.error("❌ No windows were successfully scraped")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error during catch-up scraping: {e}")
+            return False
+        finally:
+            self.close()
+
     def close(self):
         """Close the WebDriver"""
         if self.driver:
@@ -1067,11 +1251,13 @@ class ScrapeOverallResults:
 
 if __name__ == "__main__":
     scraper = ScrapeOverallResults(headless=False, delay=5)
-    success = scraper.run(
+
+    # Use catch-up mode by default - automatically detects and scrapes missing windows
+    # To scrape a specific window only, use scraper.run() instead
+    success = scraper.run_with_catchup(
         term=START_AY_TERM,
-        bid_round=TARGET_ROUND,
-        bid_window=TARGET_WINDOW,
-        auto_detect_phase=True  # Ensure auto-detection is enabled.
+        auto_detect=True  # Set to False to only scrape current window
     )
+
     if not success:
         sys.exit(1) # Exit with error

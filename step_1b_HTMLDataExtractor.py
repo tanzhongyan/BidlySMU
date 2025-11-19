@@ -688,31 +688,290 @@ class HTMLDataExtractor:
             print(f"Error saving to Excel: {e}")
             raise
     
+    def get_all_round_folders(self, term_path):
+        """Get all round folders in chronological order"""
+        try:
+            # Get all subdirectories
+            subdirs = [d for d in os.listdir(term_path) if os.path.isdir(os.path.join(term_path, d))]
+
+            # Filter for round folders (should contain R and W)
+            round_folders = [d for d in subdirs if 'R' in d and 'W' in d]
+
+            if not round_folders:
+                return []
+
+            # Sort by folder name chronologically
+            round_folders.sort(key=lambda x: (
+                int(x.split('R')[1].split('W')[0].replace('A', '').replace('B', '').replace('C', '').replace('F', '')),
+                x.count('A') + x.count('B') * 2 + x.count('C') * 3 + x.count('F') * 4,
+                int(x.split('W')[1])
+            ))
+
+            return round_folders
+
+        except Exception as e:
+            print(f"Error getting all round folders: {e}")
+            return []
+
+    def fill_missing_window(self, term, missing_window_name, source_window_name):
+        """
+        Fill missing window data by carrying forward from the most recent prior window.
+        Adds metadata flags to indicate carried-forward data.
+
+        Args:
+            term (str): Academic term (e.g., '2025-26_T1')
+            missing_window_name (str): Window name to fill (e.g., 'Round 1A Window 2')
+            source_window_name (str): Source window to copy from (e.g., 'Round 1A Window 1')
+
+        Returns:
+            int: Number of records created
+        """
+        try:
+            print(f"\n  Filling missing window: {missing_window_name}")
+            print(f"  Carrying forward from: {source_window_name}")
+
+            # Load existing data
+            existing_standalone, _, _ = self.load_existing_data()
+
+            if existing_standalone.empty:
+                print("  No existing data to carry forward")
+                return 0
+
+            # Find records from source window
+            source_records = existing_standalone[
+                (existing_standalone['bidding_window'] == source_window_name)
+            ]
+
+            if source_records.empty:
+                print(f"  No records found in source window: {source_window_name}")
+                return 0
+
+            print(f"  Found {len(source_records)} records in source window")
+
+            # Check if target window already has data
+            existing_target = existing_standalone[
+                (existing_standalone['bidding_window'] == missing_window_name)
+            ]
+
+            if not existing_target.empty:
+                print(f"  Target window already has {len(existing_target)} records, skipping")
+                return 0
+
+            # Create new records with updated window and metadata
+            records_created = 0
+            for _, record in source_records.iterrows():
+                # Create a copy of the record
+                new_record = record.to_dict()
+
+                # Update bidding window
+                new_record['bidding_window'] = missing_window_name
+
+                # Add metadata flags
+                new_record['data_source'] = 'carried_forward'
+                new_record['source_window'] = source_window_name
+
+                # Add to standalone data
+                self.standalone_data.append(new_record)
+                records_created += 1
+
+            print(f"  ✅ Created {records_created} carried-forward records")
+            return records_created
+
+        except Exception as e:
+            print(f"  ❌ Error filling missing window: {e}")
+            return 0
+
+    def process_all_windows_with_gap_filling(self, base_dir='script_input/classTimingsFull'):
+        """
+        Process ALL round folders and fill gaps for missing windows.
+        Uses BIDDING_SCHEDULES to detect missing windows and carry forward data.
+        """
+        try:
+            print("="*70)
+            print("PROCESSING ALL WINDOWS WITH GAP FILLING")
+            print("="*70)
+
+            # Find the current academic term
+            current_term = self.get_current_academic_term()
+            if not current_term:
+                print("Could not determine current academic term")
+                return
+
+            print(f"\nCurrent academic term: {current_term}")
+
+            # Get bidding schedule for this term
+            if current_term not in BIDDING_SCHEDULES:
+                print(f"No bidding schedule found for term: {current_term}")
+                return
+
+            schedule = BIDDING_SCHEDULES[current_term]
+            current_time = datetime.now()
+
+            # Get list of past windows that should exist
+            expected_windows = []
+            for schedule_time, window_name, folder_suffix in schedule:
+                if schedule_time < current_time:
+                    expected_windows.append((schedule_time, window_name, folder_suffix))
+
+            print(f"Expected {len(expected_windows)} past windows based on schedule")
+
+            term_path = os.path.join(base_dir, current_term)
+            if not os.path.exists(term_path):
+                print(f"Academic term folder not found: {term_path}")
+                return
+
+            # Get all existing round folders
+            all_round_folders = self.get_all_round_folders(term_path)
+            print(f"Found {len(all_round_folders)} existing round folders")
+
+            # Create map of folder_suffix to folder name
+            existing_folders_map = {}
+            for folder in all_round_folders:
+                suffix = folder.split('_')[-1]  # e.g., 'R1W1'
+                existing_folders_map[suffix] = folder
+
+            # Process each expected window
+            total_processed = 0
+            total_filled = 0
+            most_recent_window = None
+
+            for i, (schedule_time, window_name, folder_suffix) in enumerate(expected_windows):
+                print(f"\n--- Window {i+1}/{len(expected_windows)}: {window_name} ---")
+
+                folder_name = f"{current_term}_{folder_suffix}"
+                folder_path = os.path.join(term_path, folder_name)
+
+                if os.path.exists(folder_path):
+                    # Process HTML files from this folder
+                    print(f"  ✅ Folder exists: {folder_name}")
+
+                    # Get HTML files
+                    html_files = []
+                    for filename in os.listdir(folder_path):
+                        if filename.endswith('.html'):
+                            filepath = os.path.join(folder_path, filename)
+                            html_files.append(filepath)
+
+                    if html_files:
+                        print(f"  Processing {len(html_files)} HTML files...")
+
+                        # Load existing data to check what's already processed
+                        existing_standalone, _, _ = self.load_existing_data()
+
+                        # Filter files that haven't been processed for this bidding window
+                        files_to_process = []
+                        for filepath in html_files:
+                            acad_term_boss_id, class_boss_id = self.extract_boss_ids_from_filepath(filepath)
+
+                            # Check if record exists for this bidding window
+                            if existing_standalone.empty:
+                                files_to_process.append(filepath)
+                            else:
+                                mask = (existing_standalone['acad_term_boss_id'] == acad_term_boss_id) & \
+                                    (existing_standalone['class_boss_id'] == class_boss_id) & \
+                                    (existing_standalone['bidding_window'] == window_name)
+
+                                if not mask.any():
+                                    files_to_process.append(filepath)
+
+                        if files_to_process:
+                            print(f"  Processing {len(files_to_process)} new files...")
+                            successful = 0
+                            for filepath in files_to_process:
+                                if self.process_html_file(filepath):
+                                    successful += 1
+                            print(f"  ✅ Processed {successful}/{len(files_to_process)} files successfully")
+                            total_processed += successful
+                        else:
+                            print(f"  All files already processed")
+
+                        # Update most recent window
+                        most_recent_window = window_name
+                    else:
+                        print(f"  No HTML files found in folder")
+
+                else:
+                    # Folder doesn't exist - fill gap with carried-forward data
+                    print(f"  ❌ Folder missing: {folder_name}")
+
+                    if most_recent_window:
+                        filled = self.fill_missing_window(current_term, window_name, most_recent_window)
+                        total_filled += filled
+                    else:
+                        print(f"  Cannot fill - no prior window data available yet")
+
+            print(f"\n{'='*70}")
+            print(f"SUMMARY")
+            print(f"{'='*70}")
+            print(f"Total HTML files processed: {total_processed}")
+            print(f"Total records carried forward: {total_filled}")
+            print(f"{'='*70}\n")
+
+        except Exception as e:
+            print(f"Error in process_all_windows_with_gap_filling: {e}")
+            raise
+
     def run(self, output_path='script_input/raw_data.xlsx'):
         """Run the complete extraction process"""
         print("Starting HTML data extraction...")
-        
+
         # Reset data containers
         self.standalone_data = []
         self.multiple_data = []
         self.errors = []
-        
+
         # Set up Selenium driver
         self.setup_selenium_driver()
-        
+
         try:
             # Process files from latest round folder only
             self.process_all_files()  # Use default base_dir parameter
-            
+
             # Save to Excel
             self.save_to_excel(output_path)
-            
+
             print("HTML data extraction completed!")
             return True # Return True on success
 
         except Exception as e:
             print(f"❌ An error occurred during HTML data extraction: {e}")
             return False # Return False on failure
+
+        finally:
+            if self.driver:
+                self.driver.quit()
+                print("Selenium driver closed")
+
+    def run_with_catchup(self, output_path='script_input/raw_data.xlsx'):
+        """
+        Run extraction with catch-up mode: process ALL windows and fill gaps.
+        This is the intelligent catch-up version that automatically handles missing windows.
+        """
+        print("="*70)
+        print("HTML DATA EXTRACTION WITH CATCH-UP")
+        print("="*70)
+
+        # Reset data containers
+        self.standalone_data = []
+        self.multiple_data = []
+        self.errors = []
+
+        # Set up Selenium driver
+        self.setup_selenium_driver()
+
+        try:
+            # Process all windows with gap filling
+            self.process_all_windows_with_gap_filling()
+
+            # Save to Excel
+            self.save_to_excel(output_path)
+
+            print("\n✅ HTML data extraction with catch-up completed!")
+            return True
+
+        except Exception as e:
+            print(f"\n❌ An error occurred during HTML data extraction: {e}")
+            return False
 
         finally:
             if self.driver:
@@ -952,6 +1211,10 @@ class HTMLDataExtractor:
         
 if __name__ == "__main__":
     extractor = HTMLDataExtractor()
-    success = extractor.run(output_path='script_input/raw_data.xlsx')
+
+    # Use catch-up mode by default - processes ALL windows and fills gaps
+    # To process only the latest window, use extractor.run() instead
+    success = extractor.run_with_catchup(output_path='script_input/raw_data.xlsx')
+
     if not success:
         sys.exit(1) # Exit with error

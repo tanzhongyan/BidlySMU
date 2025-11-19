@@ -8,14 +8,17 @@
 
 ## Executive Summary
 
-**Current State:** ⚠️ **PARTIAL CATCH-UP ONLY**
+**Current State:** ✅ **FULL CATCH-UP IMPLEMENTED** (as of 2025-11-19)
 
 - ✅ **Predictions (step_3)**: Full catch-up capability for any scraped data
-- ❌ **Class HTML Scraping (step_1a)**: NO catch-up - only scrapes current window
-- ❌ **Overall Results Scraping (step_1c)**: NO catch-up - only scrapes current window
-- ⚠️ **HTML Extraction (step_1b)**: Processes whatever is available, but limited to latest round
+- ❌ **Class HTML Scraping (step_1a)**: NO catch-up - only scrapes current window (not needed - see Overall Results)
+- ✅ **Overall Results Scraping (step_1c)**: **FULL CATCH-UP** - intelligent detection and batch scraping
+- ✅ **HTML Extraction (step_1b)**: **FULL CATCH-UP** - processes all windows with gap filling
 
-**Risk:** If you miss scraping a window, that bidding data is **permanently lost** unless you manually intervene.
+**Risk Mitigation:** With new catch-up features, you can recover from missed windows using:
+1. **step_1c** catch-up mode to scrape all historical overall results data
+2. **step_1b** gap filling to carry forward data with metadata flags
+3. **step_3** automatic prediction generation for all available data
 
 ---
 
@@ -552,4 +555,273 @@ for folder_path in folders_to_process:
 - Email/alert if gaps detected
 - Dashboard showing scraping coverage
 
-Would you like me to implement any of these solutions?
+---
+
+## ✅ IMPLEMENTED CATCH-UP FEATURES (2025-11-19)
+
+### NEW: Overall Results Catch-Up (`step_1c_ScrapeOverallResults.py`)
+
+**Implementation Details:**
+
+Two new methods have been added to enable full catch-up capability:
+
+#### 1. `detect_missing_windows(term)`
+Intelligently detects missing bidding windows by:
+- Reading `BIDDING_SCHEDULES` from config.py
+- Identifying all windows that should have been scraped (based on current time)
+- Checking existing Excel file for already-scraped windows
+- Returning a list of missing (round, window, window_name) tuples
+
+```python
+missing_windows = scraper.detect_missing_windows('2025-26_T1')
+# Returns: [('1A', '2', 'Round 1A Window 2'), ('1A', '3', 'Round 1A Window 3'), ...]
+```
+
+#### 2. `run_with_catchup(term, auto_detect=True)`
+Batch scrapes all missing windows in a single login session:
+- Detects missing windows automatically (if `auto_detect=True`)
+- Logs into BOSS once
+- Iterates through each missing window
+- Scrapes term/round/window-specific data
+- Implements rate limiting between windows
+- Provides detailed progress logging
+
+**Usage:**
+```python
+from step_1c_ScrapeOverallResults import ScrapeOverallResults
+
+scraper = ScrapeOverallResults(headless=False, delay=5)
+success = scraper.run_with_catchup(term='2025-26_T1', auto_detect=True)
+```
+
+**Key Features:**
+- ✅ Automatic detection of missing windows
+- ✅ Single login session for all windows
+- ✅ Rate limiting to avoid server overload
+- ✅ Detailed progress tracking
+- ✅ Graceful error handling (continues on failure)
+- ✅ Summary statistics at completion
+
+---
+
+### NEW: HTML Extraction with Gap Filling (`step_1b_HTMLDataExtractor.py`)
+
+**Implementation Details:**
+
+Three new methods have been added to enable full catch-up with gap filling:
+
+#### 1. `get_all_round_folders(term_path)`
+Gets all round folders in chronological order (not just the latest)
+
+#### 2. `fill_missing_window(term, missing_window_name, source_window_name)`
+Carries forward data from the most recent prior window with metadata flags:
+- Copies all records from source window
+- Updates `bidding_window` to the missing window
+- **Adds metadata columns:**
+  - `data_source='carried_forward'`
+  - `source_window='Round 1A Window 1'` (example)
+- Prevents data loss when HTML folders are missing
+
+**Gap Filling Strategy:**
+```
+Window 1: HTML scraped → 500 courses in raw_data.xlsx
+Window 2: HTML MISSING → Carry forward 500 courses from Window 1
+                        → Add flags: data_source='carried_forward', source_window='Round 1 Window 1'
+Window 3: HTML scraped → 505 courses in raw_data.xlsx (fresh data)
+Window 4: HTML MISSING → Carry forward 505 courses from Window 3
+```
+
+#### 3. `process_all_windows_with_gap_filling(base_dir)`
+Processes ALL windows chronologically with intelligent gap filling:
+- Reads `BIDDING_SCHEDULES` to know what windows should exist
+- Iterates through ALL expected past windows
+- For each window:
+  - If HTML folder exists: Extract new data normally
+  - If HTML folder missing: Fill gap by carrying forward from most recent prior window
+- Processes in chronological order
+- Checks for duplicates before processing
+- Tracks most recent successfully-processed window
+
+#### 4. `run_with_catchup(output_path)`
+Main entry point for catch-up mode:
+```python
+from step_1b_HTMLDataExtractor import HTMLDataExtractor
+
+extractor = HTMLDataExtractor()
+success = extractor.run_with_catchup(output_path='script_input/raw_data.xlsx')
+```
+
+**Key Features:**
+- ✅ Processes ALL folders, not just latest
+- ✅ Fills gaps automatically with carried-forward data
+- ✅ Metadata flags to identify interpolated data
+- ✅ Chronological processing order
+- ✅ Duplicate detection and prevention
+- ✅ Comprehensive progress logging
+
+**Metadata Columns in raw_data.xlsx:**
+- `data_source`: Either blank (scraped) or `'carried_forward'` (gap-filled)
+- `source_window`: Name of the window data was carried from (e.g., `'Round 1A Window 1'`)
+
+**Example Output:**
+```
+Expected 8 past windows based on schedule
+Found 5 existing round folders
+
+--- Window 1/8: Round 1 Window 1 ---
+  ✅ Folder exists: 2025-26_T1_R1W1
+  Processing 500 HTML files...
+  ✅ Processed 500/500 files successfully
+
+--- Window 2/8: Round 1A Window 1 ---
+  ❌ Folder missing: 2025-26_T1_R1AW1
+  Filling missing window: Round 1A Window 1
+  Carrying forward from: Round 1 Window 1
+  ✅ Created 500 carried-forward records
+```
+
+---
+
+### Updated Main Execution
+
+Both scripts now use catch-up mode by default:
+
+**step_1c_ScrapeOverallResults.py:**
+```python
+if __name__ == "__main__":
+    scraper = ScrapeOverallResults(headless=False, delay=5)
+    # Use catch-up mode by default
+    success = scraper.run_with_catchup(term=START_AY_TERM, auto_detect=True)
+```
+
+**step_1b_HTMLDataExtractor.py:**
+```python
+if __name__ == "__main__":
+    extractor = HTMLDataExtractor()
+    # Use catch-up mode by default
+    success = extractor.run_with_catchup(output_path='script_input/raw_data.xlsx')
+```
+
+To use the **old behavior** (single window only), call `.run()` instead of `.run_with_catchup()`.
+
+---
+
+### Updated Summary Table
+
+| Component | Catch-Up Capability | Gap Filling | Auto-Detection | Status |
+|-----------|---------------------|-------------|----------------|--------|
+| **step_1a** (Class HTML Scraper) | ❌ None | N/A | N/A | Not needed* |
+| **step_1b** (HTML Extractor) | ✅ **FULL** | ✅ Yes (with metadata) | ✅ Yes | ✅ **IMPLEMENTED** |
+| **step_1c** (Overall Results) | ✅ **FULL** | N/A | ✅ Yes | ✅ **IMPLEMENTED** |
+| **step_2** (Table Builder) | ✅ Full | N/A | N/A | Already working |
+| **step_3** (Predictions) | ✅ Full | N/A | ✅ Yes | Already working |
+
+*Note: step_1a (individual class HTML scraping) is not needed because step_1c provides historical overall results data, which is sufficient for predictions. Gap filling in step_1b handles missing individual class data.
+
+---
+
+### Complete Catch-Up Workflow
+
+**If you've missed 5 bidding windows:**
+
+1. **Run step_1c with catch-up:**
+   ```bash
+   python step_1c_ScrapeOverallResults.py
+   ```
+   - Automatically detects 5 missing windows
+   - Logs in once
+   - Scrapes all 5 windows
+   - Saves to `script_input/overallBossResults/2025-26_T1.xlsx`
+
+2. **Run step_1b with catch-up:**
+   ```bash
+   python step_1b_HTMLDataExtractor.py
+   ```
+   - Processes any existing HTML folders
+   - Fills gaps for missing folders by carrying forward data
+   - Adds metadata flags to identify carried-forward records
+   - Saves to `script_input/raw_data.xlsx`
+
+3. **Run step_2 (table builder):**
+   ```bash
+   python step_2_TableBuilder.py
+   ```
+   - Processes all available data
+
+4. **Run step_3 (predictions):**
+   ```bash
+   python step_3_BidPrediction.py
+   ```
+   - Automatically catches up on all windows with available data
+
+**Total catch-up time:** Single login session + ~5-10 minutes per missed window
+
+---
+
+### Diagnostic Tool
+
+Use `diagnose_missing_windows.py` to check system status:
+
+```bash
+python diagnose_missing_windows.py
+```
+
+**Output:**
+```
+======================================================================
+STEP 1: CLASS HTML SCRAPING STATUS (step_1a)
+======================================================================
+
+✅ EXISTING FOLDERS (3):
+   ✅ Round 1 Window 1                         →  500 HTML files
+   ✅ Round 1A Window 3                        →  505 HTML files
+   ✅ Round 1B Window 1                        →  502 HTML files
+
+❌ MISSING FOLDERS (5):
+   ❌ Round 1A Window 1                        → script_input/classTimingsFull/2025-26_T1/2025-26_T1_R1AW1
+   ❌ Round 1A Window 2                        → script_input/classTimingsFull/2025-26_T1/2025-26_T1_R1AW2
+   ...
+
+======================================================================
+CATCH-UP PLAN
+======================================================================
+
+STEP 3: Scrape Overall Results (step_1c)
+----------------------------------------------------------------------
+python step_1c_ScrapeOverallResults.py
+
+✅ This script AUTOMATICALLY catches up on all missing windows!
+   It uses run_with_catchup() to detect and scrape missing windows.
+```
+
+---
+
+## Questions & Answers
+
+**Q: What happens to carried-forward data when the real HTML is later scraped?**
+
+A: The system will process the new HTML and add fresh records. The deduplication logic in `save_to_excel()` will prefer newer data. You can identify carried-forward data using the `data_source` column and filter/replace as needed.
+
+**Q: Can I manually trigger catch-up for specific windows?**
+
+A: Yes! Set `auto_detect=False` and pass specific parameters:
+```python
+scraper.run(term='2025-26_T1', bid_round='1A', bid_window='2', auto_detect_phase=False)
+```
+
+**Q: Will catch-up mode re-scrape windows that already exist?**
+
+A: No. The `detect_missing_windows()` method checks the Excel file and only scrapes windows that are missing.
+
+**Q: How do I identify carried-forward data in raw_data.xlsx?**
+
+A: Filter by the `data_source` column:
+```python
+df = pd.read_excel('script_input/raw_data.xlsx', sheet_name='standalone')
+carried_forward = df[df['data_source'] == 'carried_forward']
+print(f"Carried forward records: {len(carried_forward)}")
+```
+
+**Q: Is there a performance impact from processing all windows?**
+
+A: Initial catch-up takes longer, but subsequent runs are fast because the system checks for duplicates and only processes new data.
