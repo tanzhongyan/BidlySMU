@@ -6,10 +6,8 @@ import os
 import re
 import sys
 import time
-import random
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -450,73 +448,7 @@ class HTMLDataExtractor:
         except Exception as e:
             print(f"Error determining bidding window from filepath: {e}")
             return None
-    
-    def run_test(self, scraped_filepaths_csv='script_input/scraped_filepaths.csv', test_count=10):
-        """Randomly test the extraction on a subset of files"""
-        try:
-            print(f"Starting test run with {test_count} randomly selected files...")
 
-            # Reset data containers
-            self.standalone_data = []
-            self.multiple_data = []
-            self.errors = []
-
-            # Set up Selenium driver
-            self.setup_selenium_driver()
-
-            # Read the CSV file with file paths
-            df = pd.read_csv(scraped_filepaths_csv)
-
-            # Handle both 'Filepath' and 'filepath' column names
-            filepath_column = 'Filepath' if 'Filepath' in df.columns else 'filepath'
-            all_filepaths = df[filepath_column].dropna().tolist()
-
-            if len(all_filepaths) == 0:
-                raise ValueError("No valid filepaths found in CSV")
-
-            # Randomly sample filepaths
-            sample_size = min(test_count, len(all_filepaths))
-            sampled_filepaths = random.sample(all_filepaths, sample_size)
-
-            processed_files = 0
-            successful_files = 0
-
-            for i, filepath in enumerate(sampled_filepaths, start=1):
-                if os.path.exists(filepath):
-                    print(f"Processing test file {i}/{sample_size}: {os.path.basename(filepath)}")
-                    if self.process_html_file(filepath):
-                        successful_files += 1
-                    processed_files += 1
-                else:
-                    self.errors.append({
-                        'filepath': filepath,
-                        'error': 'File not found',
-                        'type': 'file_error'
-                    })
-
-            print(f"\nTest run complete: {successful_files}/{processed_files} files successful")
-            print(f"Standalone records extracted: {len(self.standalone_data)}")
-            print(f"Multiple records extracted: {len(self.multiple_data)}")
-            if self.errors:
-                print(f"Errors encountered: {len(self.errors)}")
-                for error in self.errors[:3]:  # Show only the first 3 errors
-                    print(f"  - {error['type']}: {error['error']}")
-
-            # Save test results
-            test_output_path = 'script_input/test_raw_data.xlsx'
-            self.save_to_excel(test_output_path)
-
-            return successful_files > 0
-
-        except Exception as e:
-            print(f"Error in test run: {e}")
-            return False
-
-        finally:
-            if self.driver:
-                self.driver.quit()
-                print("Test selenium driver closed")
-    
     def process_all_files(self, base_dir='script_input/classTimingsFull'):
         """Process only files from the latest round folder that haven't been processed yet"""
         try:
