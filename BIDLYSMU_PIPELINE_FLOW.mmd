@@ -122,11 +122,11 @@ flowchart TD
             
             E1_2_End --> E1_3_Start
             
-            subgraph E1_3_Sub["Three-Model Training/Prediction"]
+            subgraph E1_3_Sub["Three-Model Inference"]
                 E1_3_Start[Start Modeling]
-                E1_3a[Classification Model<br/>Bid Opportunity Detection] --> E1_3b
-                E1_3b[Median Bid Regression<br/>Price Prediction] --> E1_3c
-                E1_3c[Minimum Bid Regression<br/>Price Prediction]
+                E1_3a[Classification Model<br/>Bid Probability Prediction] --> E1_3b
+                E1_3b[Median Bid Regression<br/>Median Price Prediction] --> E1_3c
+                E1_3c[Minimum Bid Regression<br/>Min Price Prediction]
                 E1_3_Start --> E1_3a
                 E1_3c --> E1_3_End[Models Complete]
             end
@@ -148,10 +148,10 @@ flowchart TD
             E1_5 --> E1_End[Prediction Complete]
         end
         
-        E1_End -->|Trained Models| E2[Production Models Ready]
-        E2 --> E3[Prediction Generation]
-        E3 --> E4[Confidence Intervals]
-        E4 --> E5[Safety Factor Application]
+        E1_End -->|Generated Predictions| E2[Predictions with Uncertainty]
+        E2 --> E3[Safety Factor Application]
+        E3 --> E4[Recommended Bid Calculation]
+        E4 --> E5[Database Storage]
     end
     
     %% ========== ORCHESTRATION LAYER ==========
@@ -183,8 +183,8 @@ flowchart TD
     Orchestration -->|Controls| Phase3
     
     %% ========== OUTPUTS ==========
-    Phase3 --> F1[Final Predictions<br/>with Uncertainty]
-    Phase3 --> F2[Trained Model Files<br/>.cbm format]
+    Phase3 --> F1[Bid Predictions<br/>with Uncertainty]
+    Phase3 --> F2[Safety Factor Table<br/>.csv format]
     Phase2 --> F3[Structured Database<br/>PostgreSQL]
     
     %% ========== EXTERNAL DEPENDENCIES ==========
@@ -211,8 +211,8 @@ flowchart TD
     classDef dependency fill:#fce4ec,stroke:#880e4f,stroke-width:1px
     
     class Phase1,Phase2,Phase3,Orchestration phase
-    class StreamA,StreamB,D1,E1,O2 component
-    class A2,A3,B2,D1_6,E1_2,E1_3,E1_4 subcomponent
+    class StreamA,StreamB,D1_Sub,E1_Sub,O2_Sub component
+    class A2_Sub,A3_Sub,B2_Sub,D1_6_Sub,E1_2_Sub,E1_3_Sub,E1_4_Sub subcomponent
     class A4,B3,C1,D2,E2 data
     class F1,F2,F3 output
     class Dependencies dependency
@@ -222,14 +222,14 @@ flowchart TD
 %% ### Phase Colors
 %% - **Blue**: Data Collection Phase (Parallel execution)
 %% - **Purple**: Data Processing Phase (Sequential)
-%% - **Green**: Machine Learning Phase (Sequential)
+%% - **Green**: Machine Learning Inference Phase (Sequential)
 %% - **Orange**: Orchestration Layer
 %% 
 %% ### Component Types
 %% - **Rectangles**: Main pipeline components
 %% - **Subgraphs**: Detailed internal processes
-%% - **Diamonds**: Data outputs
-%% - **Ovals**: External dependencies
+%% - **Rounded Rectangles**: Data outputs
+%% - **Hexagons**: External dependencies
 %% 
 %% ### Key Architectural Patterns
 %% 1. **Parallel Execution**: Step 1 runs Stream A and Stream B concurrently
@@ -240,8 +240,13 @@ flowchart TD
 %% 
 %% ### Critical Paths
 %% 1. **Scraping Path**: BOSS Website → HTML → Excel → Database
-%% 2. **ML Path**: Database → Features → Models → Predictions
+%% 2. **ML Inference Path**: Pre-trained Models + Database → Features → Predictions
 %% 3. **Control Path**: Bash script → Parallel steps → Sequential steps
+%% 
+%% ### Important Notes
+%% - **Model Training**: Happens separately in V4_03_catboost_training.ipynb (not part of this pipeline)
+%% - **Step 3**: Loads pre-trained models and generates predictions (does NOT train models)
+%% - **Classes Creation**: Step 2 creates class records BEFORE Step 3 predictions
 %% 
 %% ### Performance Considerations
 %% - **Parallelism**: Step 1 components run concurrently

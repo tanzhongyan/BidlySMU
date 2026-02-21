@@ -3,6 +3,10 @@
 ## Overview
 BidlySMU is a comprehensive data pipeline for Singapore Management University (SMU) course bidding prediction system. The pipeline follows an ETL (Extract, Transform, Load) pattern with machine learning integration for predicting minimum and median bid prices for university courses.
 
+**Important Note**: The pipeline consists of two separate workflows:
+1. **Production Pipeline** (`run_pipeline.sh`): Data collection → Processing → Prediction using pre-trained models
+2. **Model Training** (`V4_03_catboost_training.ipynb`): Trains the three CatBoost models from historical data (separate process)
+
 ## Architecture Components
 
 ### 1. Data Acquisition Layer (Step 1)
@@ -52,25 +56,31 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 - **Dependencies**: SQLAlchemy, psycopg2, pandas
 
 ### 3. Machine Learning Layer (Step 3)
-**Purpose**: Generate predictive models for bid price forecasting.
+**Purpose**: Load pre-trained models and generate predictions for bid price forecasting.
 
 #### Bid Prediction (`step_3_BidPrediction.py`)
-- **Function**: Trains and applies CatBoost models for bid prediction
+- **Function**: Loads pre-trained CatBoost models and applies them for bid prediction
+- **Note**: Model training happens separately in `V4_03_catboost_training.ipynb`
 - **Key Features**:
   - **Three-model architecture**:
     1. **Classification Model**: Predicts if a course will receive bids
     2. **Median Bid Regression**: Predicts median bid price
     3. **Minimum Bid Regression**: Predicts minimum successful bid
   - **Advanced feature engineering**:
-    - Course code decomposition (school, level, number)
-    - Bidding window feature extraction
-    - Day-of-week one-hot encoding
-    - Instructor categorical encoding
+    - Course code decomposition (subject area, catalogue number)
+    - Bidding window feature extraction (round, window)
+    - Day-of-week one-hot encoding (7 binary features)
+    - Instructor categorical encoding (JSON array format)
+    - Time and vacancy features
   - **Uncertainty quantification**:
+    - Virtual ensemble method (10 tree subsets) for prediction uncertainty
     - T-distribution based confidence intervals
-    - Entropy-based confidence scoring
+    - Entropy-based confidence scoring for classification
     - Percentile-based safety factors (1%-99%)
-  - **Model persistence**: `.cbm` (CatBoost) file format
+  - **Model files**: Loads three `.cbm` (CatBoost) production model files:
+    - `production_classification_model.cbm`
+    - `production_regression_median_model.cbm`
+    - `production_regression_min_model.cbm`
 - **Dependencies**: CatBoost, scikit-learn, numpy, pandas
 
 ### 4. Orchestration Layer
@@ -97,30 +107,32 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 
 ### Phase 1: Data Collection (Parallel)
 ```
-BOSS Website (Selenium) → HTML Files → Excel Data
-       ↑                        ↑
-    [1a] Scraper           [1b] Extractor
-       ↓                        ↓
-    Class Details          Structured Data
-       └───────────────────────┘
-                    ↓
-           [1c] Historical Results
-                    ↓
-            Raw Data Collection
+Stream A: Class Details Pipeline (Sequential)
+BOSS Website → [1a] Scraper → HTML Files → [1b] Extractor → raw_data.xlsx
+
+Stream B: Historical Results (Parallel with Stream A)
+BOSS Website → [1c] Overall Results Scraper → Historical Bidding Data
+
+                    ↓ (Both streams complete)
+            Combined Raw Data Ready
 ```
 
 ### Phase 2: Data Processing (Sequential)
 ```
-Raw Data → [2] Table Builder → Database Tables
+Raw Data (raw_data.xlsx) → [2] Table Builder → Database Tables
                     ↓
-           Structured Data Ready
+           Entity Resolution (professors, courses)
                     ↓
-         Feature Engineering Pipeline
+           Create Classes with class_id
+                    ↓
+        Generate CSV outputs for verification
+                    ↓
+         Database Ready for ML
 ```
 
-### Phase 3: Model Training & Prediction (Sequential)
+### Phase 3: Prediction using Pre-trained Models (Sequential)
 ```
-Structured Data → [3] Bid Prediction → Trained Models
+Pre-trained Models + Structured Data → [3] Bid Prediction → Predictions
                     ↓
            Prediction Generation
                     ↓
@@ -136,23 +148,61 @@ Structured Data → [3] Bid Prediction → Trained Models
 - Clear interfaces between components
 - Independent testing capabilities
 
-### 2. Error Resilience
+### 2. Critical Execution Order
+- **Step 2 MUST complete before Step 3**: Classes with `class_id` must exist before predictions
+- **Database constraint**: `BidPrediction.classId` references `Classes.id` (foreign key)
+- **Multi-professor handling**: Step 2 creates separate class records for each professor
+- **Class mapping**: Step 3 links predictions to `class_id` via `new_classes.csv` + database cache
+
+### 3. Error Resilience
 - Comprehensive logging at each step
 - Pipeline halting on critical failures
 - Retry mechanisms for web scraping
 - Data validation at transformation boundaries
+- Transaction rollback in database operations
 
-### 3. Performance Optimization
-- Parallel execution for independent tasks
+### 4. Performance Optimization
+- Parallel execution for independent tasks (Step 1a+1b runs parallel with 1c)
 - Database connection pooling
 - Caching for entity resolution
 - Batch processing for large datasets
+- Pre-loading models once per execution
 
-### 4. Configuration Management
+### 5. Configuration Management
 - Centralized configuration file
 - Environment variable support
 - Academic calendar awareness
 - Schedule-based execution control
+
+## Pipeline vs Model Training
+
+### Production Pipeline (`run_pipeline.sh`)
+**Purpose**: Collect current data, process it, and generate predictions
+- **Frequency**: Runs for each bidding window (multiple times per term)
+- **Input**: Live BOSS system data
+- **Output**: Predictions for current courses
+- **Models**: Uses pre-trained models (loads `.cbm` files)
+- **Duration**: ~15-30 minutes depending on data volume
+
+### Model Training Workflow (`V4_03_catboost_training.ipynb`)
+**Purpose**: Train/retrain prediction models from historical data
+- **Frequency**: Periodic (e.g., once per term or when model performance degrades)
+- **Input**: Historical bidding data from database
+- **Output**: Three trained model files (`.cbm` format) + safety factor table
+- **Process**: 
+  1. Load historical data
+  2. Feature engineering and preprocessing
+  3. Train three CatBoost models with hyperparameter tuning
+  4. Generate validation metrics
+  5. Calculate safety factors via t-distribution fitting
+  6. Save production models to `script_output/models/`
+- **Duration**: ~1-2 hours depending on data size and hyperparameters
+
+### Critical Distinction
+- The **pipeline** (steps 1-3) does NOT train models
+- Model training happens **offline** in Jupyter notebooks
+- Pipeline always loads the **latest production models**
+- Both workflows share the same feature engineering code (`SMUBiddingTransformer`)
 
 ## Technical Stack
 
@@ -391,10 +441,15 @@ BidlySMU implements a sophisticated three-phase data pipeline for SMU course bid
 - Performance metrics collection
 
 ### Model Management
-- Version control for trained models
-- Performance monitoring over time
-- Regular retraining schedules
-- A/B testing capabilities
+- Pre-trained models stored as `.cbm` files in `script_output/models/`
+- Three production models:
+  - `classification/production_classification_model.cbm`
+  - `regression_median/production_regression_median_model.cbm`
+  - `regression_min/production_regression_min_model.cbm`
+- Model training done separately in `V4_03_catboost_training.ipynb`
+- Version control for trained models (V1, V2, V3, V4)
+- Performance monitoring through validation metrics
+- Safety factor table updated after model training
 
 ## Evolution and Versioning
 
