@@ -1,7 +1,7 @@
 # Import global configuration settings
 from config import *
 
-# Import dependencieS
+# Import dependencies
 import os
 import re
 import sys
@@ -20,13 +20,18 @@ from typing import List, Optional, Tuple
 from collections import Counter, defaultdict
 from dotenv import load_dotenv
 from google import genai 
-from sqlalchemy import create_engine
+
+# Import new atomic dual-write modules
+from util import get_logger
+from db_manager import DatabaseManager
+from transaction_manager import TransactionManager, atomic_dual_write
+from dual_write import DualWriteManager
 
 # Set up logging
 import traceback
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Use centralized logging utility
+logger = get_logger("bidlysmu.tablebuilder")
 
 class TableBuilder:
     """Comprehensive table builder for university class management system"""
@@ -216,27 +221,43 @@ class TableBuilder:
         else:
             logger.warning("⚠️ GEMINI_API_KEY not found. LLM normalization will be skipped.")
 
-        # Initialize database connection
+        # Initialize database connection with new atomic dual-write system
         self.engine = None
         self.db_connection = None
-        self.db_transaction = None
+        self.db_manager = None  # DatabaseManager instance
+        # Note: db_transaction is no longer used - transactions are managed by TransactionManager
 
     def connect_database(self):
-        """Connect to PostgreSQL database using SQLAlchemy and begin a transaction."""
+        """Connect to PostgreSQL database using DatabaseManager with connection pooling."""
         try:
+            # Create database URL
             db_url = (
                 f"postgresql+psycopg2://{self.db_config['user']}:{self.db_config['password']}"
                 f"@{self.db_config['host']}:{self.db_config['port']}/{self.db_config['database']}"
             )
-            self.engine = create_engine(db_url)
-            self.db_connection = self.engine.connect()
-            self.db_transaction = self.db_connection.begin()  # Start a transaction
             
-            logger.info("✅ Database connection established and transaction started.")
-            return True
+            # Initialize DatabaseManager with connection pooling
+            self.db_manager = DatabaseManager(db_url, logger_name="bidlysmu.db")
+            
+            # Get engine and connection with retry logic
+            self.engine = self.db_manager.get_engine()
+            self.db_connection = self.db_manager.get_connection()
+            
+            # Note: Transaction is now managed by TransactionManager
+            # We don't start a transaction here anymore
+            
+            logger.info("✅ Database connection with pooling established")
+            
+            # Test connection
+            if self.db_manager.test_connection():
+                logger.info("✅ Database connection test successful")
+                return True
+            else:
+                logger.error("❌ Database connection test failed")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Database connection failed: {e}")
-            traceback.print_exc()
+            logger.error(f"❌ Database connection failed: {e}", exc_info=True)
             return False
 
     def load_or_cache_data(self):
@@ -508,81 +529,117 @@ class TableBuilder:
             return False
 
     def _execute_db_operations(self):
-        """Executes all collected INSERT, UPDATE, and UPSERT operations within the transaction."""
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from sqlalchemy import text
-        from sqlalchemy.exc import SQLAlchemyError
-
-        logger.info("Executing database operations...")
-        conn = self.db_connection
-
+        """Executes all collected INSERT, UPDATE, and UPSERT operations using atomic dual-write."""
+        logger.info("Executing database operations with atomic dual-write...")
+        
+        # Initialize transaction manager and dual-write manager
+        txn_mgr = TransactionManager(self.db_connection, logger_name="bidlysmu.transaction")
+        write_mgr = DualWriteManager(logger_name="bidlysmu.dual_write")
+        
+        # Store CSV data for atomic write after successful commit
+        csv_data = {}
+        
         try:
-            # Helper for DataFrame to dictionary conversion, handling NaN
-            def df_to_records(df):
-                return df.where(pd.notna(df), None).to_dict('records')
-
-            # 1. Simple INSERTS
-            insert_map = {
-                'professors': self.new_professors,
-                'courses': self.new_courses,
-                'acad_term': self.new_acad_terms,
-                'classes': self.new_classes,
-                'class_timing': self.new_class_timings,
-                'class_exam_timing': self.new_class_exam_timings,
-                'bid_window': self.new_bid_windows
-            }
-            for table_name, data_list in insert_map.items():
-                if data_list:
-                    df = pd.DataFrame(data_list)
-                    logger.info(f"Inserting {len(df)} records into {table_name}...")
-                    # Use pandas to_sql for efficient bulk inserts
-                    df.to_sql(table_name, conn, if_exists='append', index=False, chunksize=1000)
-
-            # 2. UPDATES
-            def execute_update(table, records):
-                logger.info(f"Updating {len(records)} records in {table}...")
-                for record in records:
-                    record_id = record.pop('id')
-                    # Using SQLAlchemy text to prevent SQL injection
-                    stmt = text(f"UPDATE {table} SET {', '.join([f'{k} = :{k}' for k in record.keys()])} WHERE id = :id")
-                    conn.execute(stmt, {**record, 'id': record_id})
-            
-            if self.update_courses:
-                execute_update('courses', self.update_courses)
-            if hasattr(self, 'update_classes') and self.update_classes:
-                execute_update('classes', self.update_classes)
-            if self.update_professors:
-                logger.info(f"Updating {len(self.update_professors)} records in professors...")
-                for record in self.update_professors:
-                    record_id = record.pop('id')
-                    # boss_aliases is a text[] in postgres, format correctly
-                    aliases = json.loads(record['boss_aliases'])
-                    stmt = text("UPDATE professors SET boss_aliases = :boss_aliases WHERE id = :id")
-                    conn.execute(stmt, {'boss_aliases': aliases, 'id': record_id})
-            
-            # 3. UPSERTS (INSERT ON CONFLICT)
-            def execute_upsert(table, records, index_elements):
-                if not records: return
-                logger.info(f"Upserting {len(records)} records into {table}...")
-                stmt = pg_insert(text(table)).values(records)
-                update_cols = {col.name: col for col in stmt.excluded if col.name not in index_elements}
-                stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=update_cols)
-                conn.execute(stmt)
-
-            if self.new_class_availability:
-                execute_upsert('class_availability', df_to_records(pd.DataFrame(self.new_class_availability)), ['class_id', 'bid_window_id'])
-            
-            all_bid_results = self.new_bid_result + getattr(self, 'update_bid_result', [])
-            if all_bid_results:
-                execute_upsert('bid_result', df_to_records(pd.DataFrame(all_bid_results)), ['bid_window_id', 'class_id'])
-
-            logger.info("✅ Database operations executed successfully within transaction.")
-            return True
-
-        except (SQLAlchemyError, Exception) as e:
-            logger.error(f"❌ Error during database operations: {e}")
-            traceback.print_exc()
-            raise # Re-raise the exception to trigger a rollback
+            # Use atomic transaction context manager
+            with txn_mgr.atomic_transaction():
+                # Helper for DataFrame to dictionary conversion, handling NaN
+                def df_to_records(df):
+                    return df.where(pd.notna(df), None).to_dict('records')
+                
+                # 1. Simple INSERTS with dual-write
+                insert_map = {
+                    'professors': (self.new_professors, 'new_professors.csv'),
+                    'courses': (self.new_courses, 'new_courses.csv'),
+                    'acad_term': (self.new_acad_terms, 'new_acad_term.csv'),
+                    'classes': (self.new_classes, 'new_classes.csv'),
+                    'class_timing': (self.new_class_timings, 'new_class_timing.csv'),
+                    'class_exam_timing': (self.new_class_exam_timings, 'new_class_exam_timing.csv'),
+                    'bid_window': (self.new_bid_windows, 'new_bid_windows.csv')
+                }
+                
+                for table_name, (data_list, csv_key) in insert_map.items():
+                    if data_list:
+                        df = pd.DataFrame(data_list)
+                        
+                        # Store CSV data for atomic write after commit
+                        csv_data[csv_key] = df
+                        
+                        # Perform database insert
+                        write_mgr.bulk_insert(df, table_name, self.db_connection, chunksize=1000)
+                
+                # 2. UPDATES with dual-write
+                if self.update_courses:
+                    write_mgr.bulk_update(
+                        self.update_courses, 
+                        'courses', 
+                        self.db_connection, 
+                        id_column='id'
+                    )
+                    # Store update data for CSV
+                    if self.update_courses:
+                        csv_data['update_courses.csv'] = pd.DataFrame(self.update_courses)
+                
+                if hasattr(self, 'update_classes') and self.update_classes:
+                    write_mgr.bulk_update(
+                        self.update_classes,
+                        'classes',
+                        self.db_connection,
+                        id_column='id'
+                    )
+                    # Store update data for CSV
+                    csv_data['update_classes.csv'] = pd.DataFrame(self.update_classes)
+                
+                if self.update_professors:
+                    # Special handling for professors with boss_aliases array
+                    logger.info(f"Updating {len(self.update_professors)} records in professors...")
+                    for record in self.update_professors:
+                        record_id = record.pop('id')
+                        # boss_aliases is a text[] in postgres, format correctly
+                        aliases = json.loads(record['boss_aliases'])
+                        from sqlalchemy import text
+                        stmt = text("UPDATE professors SET boss_aliases = :boss_aliases WHERE id = :id")
+                        self.db_connection.execute(stmt, {'boss_aliases': aliases, 'id': record_id})
+                    
+                    # Store update data for CSV
+                    csv_data['update_professor.csv'] = pd.DataFrame(self.update_professors)
+                
+                # 3. UPSERTS (INSERT ON CONFLICT) with dual-write
+                if self.new_class_availability:
+                    df_availability = pd.DataFrame(self.new_class_availability)
+                    write_mgr.bulk_upsert(
+                        df_availability,
+                        'class_availability',
+                        self.db_connection,
+                        index_elements=['class_id', 'bid_window_id']
+                    )
+                
+                all_bid_results = self.new_bid_result + getattr(self, 'update_bid_result', [])
+                if all_bid_results:
+                    df_bid_results = pd.DataFrame(all_bid_results)
+                    write_mgr.bulk_upsert(
+                        df_bid_results,
+                        'bid_result',
+                        self.db_connection,
+                        index_elements=['bid_window_id', 'class_id']
+                    )
+                    
+                    # Store bid result updates for CSV
+                    update_bid_records = getattr(self, 'update_bid_result', [])
+                    if update_bid_records:
+                        csv_data['update_bid_result.csv'] = pd.DataFrame(update_bid_records)
+                
+                # Store courses needing faculty for CSV
+                if self.courses_needing_faculty:
+                    csv_data['courses_needing_faculty.csv'] = pd.DataFrame(self.courses_needing_faculty)
+                
+                logger.info("✅ Database operations executed successfully within atomic transaction.")
+                
+                # Return CSV data to be written after successful commit
+                return csv_data
+                
+        except Exception as e:
+            logger.error(f"❌ Error during atomic dual-write operations: {e}", exc_info=True)
+            raise  # Re-raise to trigger rollback and cleanup
 
     def _normalize_professor_name_fallback(self, name: str) -> Tuple[str, str]:
         """
@@ -1969,59 +2026,84 @@ class TableBuilder:
         logger.info(f"✅ Created {self.stats['timings_created']} new class timings (after deduplication).")
         logger.info(f"✅ Created {self.stats['exams_created']} new exam timings (after deduplication).")
 
-    def save_outputs(self):
-        """Save all generated CSV files, only creating files that have data."""
-        logger.info("💾 Saving output files...")
-
-        def to_csv_if_not_empty(data_list, filename):
-            if data_list:
-                df = pd.DataFrame(data_list)
-                if not df.empty:
-                    path = os.path.join(self.output_base, filename)
-                    df.to_csv(path, index=False)
-                    logger.info(f"✅ Saved {len(df)} records to {filename}")
-                    
-                    # DEBUG: For update_bid_result, show what we're saving
-                    if filename == 'update_bid_result.csv':
-                        logger.info(f"🔍 DEBUG: update_bid_result.csv columns: {list(df.columns)}")
-                        # Show first few rows with median/min values
-                        rows_with_bid_data = df[(df['median'].notna()) | (df['min'].notna())]
-                        if not rows_with_bid_data.empty:
-                            logger.info(f"🔍 DEBUG: {len(rows_with_bid_data)} rows have median/min data")
-                            logger.info(f"🔍 DEBUG: Sample data:")
-                            for idx, row in rows_with_bid_data.head(3).iterrows():
-                                logger.info(f"  bid_window_id={row['bid_window_id']}, class_id={row['class_id']}, median={row.get('median')}, min={row.get('min')}")
-                        else:
-                            logger.warning("⚠️ DEBUG: No rows in update_bid_result have median/min values!")
-
-        # The following line is the only change. It has been removed.
-        # to_csv_if_not_empty(self.new_professors, 'new_professors.csv') 
+    def save_outputs(self, csv_data: dict = None):
+        """
+        Save CSV files after successful database commit (atomic dual-write pattern).
         
-        to_csv_if_not_empty(getattr(self, 'update_professors', []), 'update_professor.csv')
-        # We also no longer need to save new_courses here, as it's handled in Phase 1.
-        # to_csv_if_not_empty(self.new_courses, os.path.join('verify', 'new_courses.csv'))
-        to_csv_if_not_empty(self.update_courses, 'update_courses.csv')
-        to_csv_if_not_empty(getattr(self, 'update_classes', []), 'update_classes.csv')
-        to_csv_if_not_empty(self.new_acad_terms, 'new_acad_term.csv')
-        to_csv_if_not_empty(self.new_classes, 'new_classes.csv')
-        to_csv_if_not_empty(self.new_class_timings, 'new_class_timing.csv')
-        to_csv_if_not_empty(self.new_class_exam_timings, 'new_class_exam_timing.csv')
-        update_records = getattr(self, 'update_bid_result', [])
-        if update_records:
-            logger.info(f"📝 Preparing to save {len(update_records)} bid result updates")
-            # Show sample of records with actual bid data
-            records_with_bids = [r for r in update_records if r.get('median') is not None or r.get('min') is not None]
-            logger.info(f"   - {len(records_with_bids)} records have median/min bid data")
-            if records_with_bids:
-                sample = records_with_bids[0]
-                logger.info(f"   - Sample: bid_window_id={sample.get('bid_window_id')}, median={sample.get('median')}, min={sample.get('min')}")
-        to_csv_if_not_empty(update_records, 'update_bid_result.csv')
-
-        if self.courses_needing_faculty:
-            df = pd.DataFrame(self.courses_needing_faculty)
-            # Note: This path should probably also be in the 'verify' folder
-            df.to_csv(os.path.join(self.verify_dir, 'courses_needing_faculty.csv'), index=False)
-            logger.info(f"✅ Saved {len(self.courses_needing_faculty)} courses needing faculty assignment to the verify folder.")
+        Args:
+            csv_data: Dictionary of CSV data returned from _execute_db_operations()
+                     Keys: filename, Values: DataFrame
+        """
+        logger.info("💾 Saving output files with atomic dual-write...")
+        
+        if csv_data is None:
+            logger.warning("No CSV data provided, using legacy data collection")
+            csv_data = {}
+        
+        # Helper function to save DataFrame to CSV
+        def save_df_to_csv(df, filename, debug_info=None):
+            if df is not None and not df.empty:
+                # Determine path (some files go to verify directory)
+                if filename in ['new_courses.csv', 'courses_needing_faculty.csv']:
+                    path = os.path.join(self.verify_dir, filename)
+                else:
+                    path = os.path.join(self.output_base, filename)
+                
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                
+                # Save CSV
+                df.to_csv(path, index=False)
+                logger.info(f"✅ Saved {len(df)} records to {filename}")
+                
+                # Debug info for bid results
+                if debug_info and filename == 'update_bid_result.csv':
+                    logger.info(f"🔍 DEBUG: update_bid_result.csv columns: {list(df.columns)}")
+                    rows_with_bid_data = df[(df['median'].notna()) | (df['min'].notna())]
+                    if not rows_with_bid_data.empty:
+                        logger.info(f"🔍 DEBUG: {len(rows_with_bid_data)} rows have median/min data")
+                        logger.info(f"🔍 DEBUG: Sample data:")
+                        for idx, row in rows_with_bid_data.head(3).iterrows():
+                            logger.info(f"  bid_window_id={row['bid_window_id']}, class_id={row['class_id']}, median={row.get('median')}, min={row.get('min')}")
+                    else:
+                        logger.warning("⚠️ DEBUG: No rows in update_bid_result have median/min values!")
+        
+        # Save all CSV data from atomic transaction
+        for filename, df in csv_data.items():
+            save_df_to_csv(df, filename)
+        
+        # Also save any data that might not have been in csv_data (backward compatibility)
+        if not csv_data:
+            # Legacy saving logic (for backward compatibility)
+            def to_csv_if_not_empty(data_list, filename):
+                if data_list:
+                    df = pd.DataFrame(data_list)
+                    save_df_to_csv(df, filename)
+            
+            to_csv_if_not_empty(getattr(self, 'update_professors', []), 'update_professor.csv')
+            to_csv_if_not_empty(self.update_courses, 'update_courses.csv')
+            to_csv_if_not_empty(getattr(self, 'update_classes', []), 'update_classes.csv')
+            to_csv_if_not_empty(self.new_acad_terms, 'new_acad_term.csv')
+            to_csv_if_not_empty(self.new_classes, 'new_classes.csv')
+            to_csv_if_not_empty(self.new_class_timings, 'new_class_timing.csv')
+            to_csv_if_not_empty(self.new_class_exam_timings, 'new_class_exam_timing.csv')
+            
+            update_records = getattr(self, 'update_bid_result', [])
+            if update_records:
+                logger.info(f"📝 Preparing to save {len(update_records)} bid result updates")
+                records_with_bids = [r for r in update_records if r.get('median') is not None or r.get('min') is not None]
+                logger.info(f"   - {len(records_with_bids)} records have median/min bid data")
+                if records_with_bids:
+                    sample = records_with_bids[0]
+                    logger.info(f"   - Sample: bid_window_id={sample.get('bid_window_id')}, median={sample.get('median')}, min={sample.get('min')}")
+            
+            to_csv_if_not_empty(update_records, 'update_bid_result.csv')
+            
+            if self.courses_needing_faculty:
+                df = pd.DataFrame(self.courses_needing_faculty)
+                save_df_to_csv(df, 'courses_needing_faculty.csv')
+        
+        logger.info("✅ All output files saved successfully")
             
     def update_professor_lookup_from_corrected_csv(self):
         """Update professor lookup from manually corrected new_professors.csv"""
@@ -4728,7 +4810,7 @@ class TableBuilder:
 if __name__ == "__main__":
     builder = TableBuilder()
     
-    # Establish database connection and start transaction
+    # Establish database connection with pooling (no transaction started here)
     if not builder.connect_database():
         sys.exit(1)
 
@@ -4756,21 +4838,28 @@ if __name__ == "__main__":
             raise Exception("Phase 3 failed.")
         print("✅ Phase 3 completed successfully.")
 
-        # --- Final Step: Execute all DB operations ---
-        print("\n--- Executing database writes ---")
-        builder._execute_db_operations()
-
-        # If all steps are successful, commit the transaction
-        builder.db_transaction.commit()
-        print("\n🎉 All phases completed successfully and transaction committed!")
+        # --- Final Step: Execute all DB operations with atomic dual-write ---
+        print("\n--- Executing atomic dual-write operations ---")
+        csv_data = builder._execute_db_operations()
+        
+        # Save CSV files after successful database commit
+        print("\n--- Saving output files ---")
+        builder.save_outputs(csv_data)
+        
+        print("\n🎉 All phases completed successfully with atomic dual-write!")
 
     except Exception as e:
-        print(f"❌ An error occurred: {e}. Rolling back transaction.")
-        if builder.db_transaction:
-            builder.db_transaction.rollback()
+        print(f"❌ An error occurred: {e}")
+        # Note: Rollback is handled automatically by TransactionManager
         sys.exit(1)
     
     finally:
-        if builder.db_connection:
+        # Close database connection
+        if hasattr(builder, 'db_connection') and builder.db_connection:
             builder.db_connection.close()
             print("🔒 Database connection closed.")
+        
+        # Close database manager if it exists
+        if hasattr(builder, 'db_manager') and builder.db_manager:
+            builder.db_manager.close_all_connections()
+            print("🔒 Database connections pooled and closed.")
