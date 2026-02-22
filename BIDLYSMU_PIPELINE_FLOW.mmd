@@ -1,0 +1,261 @@
+flowchart TD
+    %% ============================================
+    %% BIDLYSMU PIPELINE ARCHITECTURE FLOWCHART
+    %% ============================================
+    
+    %% ========== PHASE 1: DATA COLLECTION ==========
+    subgraph Phase1["Phase 1: Data Collection (Parallel Execution)"]
+        direction TB
+        
+        %% Stream A: Class Details Scraping
+        subgraph StreamA["Stream A: Class Details Pipeline"]
+            A1[BOSS Website<br/>SMU Bidding System] -->|Selenium Automation| A2_Start
+            
+            subgraph A2_Sub["step_1a_BOSSClassScraper.py"]
+                A2_Start[Start Scraper]
+                A2_1[Initialize ChromeDriver] --> A2_2
+                A2_2[Manual Login Wait<br/>Microsoft Authenticator] --> A2_3
+                A2_3[Term Schedule Detection] --> A2_4
+                A2_4[Class Number Scanning<br/>1000-5000 Range] --> A2_5
+                A2_5[HTML Page Scraping] --> A2_6
+                A2_6[HTML File Storage<br/>Structured Directory]
+                A2_Start --> A2_1
+                A2_6 --> A2_End[HTML Output]
+            end
+            
+            A2_End -->|HTML Files| A3_Start
+            
+            subgraph A3_Sub["step_1b_HTMLDataExtractor.py"]
+                A3_Start[Start Extractor]
+                A3_1[Load HTML Files] --> A3_2
+                A3_2[Selenium DOM Parsing] --> A3_3
+                A3_3[Data Extraction & Cleaning] --> A3_4
+                A3_4[Encoding Handling] --> A3_5
+                A3_5[Excel File Generation]
+                A3_Start --> A3_1
+                A3_5 --> A3_End[Excel Output]
+            end
+            
+            A3_End -->|raw_data.xlsx| A4[Class Details Data]
+        end
+        
+        %% Stream B: Historical Results
+        subgraph StreamB["Stream B: Historical Results"]
+            B1[BOSS Historical Results] -->|Selenium| B2_Start
+            
+            subgraph B2_Sub["step_1c_ScrapeOverallResults.py"]
+                B2_Start[Start Scraper]
+                B2_1[Academic Year Iteration] --> B2_2
+                B2_2[Term-wise Scraping] --> B2_3
+                B2_3[Bidding Result Extraction] --> B2_4
+                B2_4[Error Handling & Retry]
+                B2_Start --> B2_1
+                B2_4 --> B2_End[Results Output]
+            end
+            
+            B2_End -->|Historical Data| B3[Historical Bidding Data]
+        end
+        
+        %% Data Merge Point
+        A4 --> C1[Combined Raw Data]
+        B3 --> C1
+    end
+    
+    %% ========== PHASE 2: DATA PROCESSING ==========
+    subgraph Phase2["Phase 2: Data Processing (Sequential)"]
+        direction TB
+        
+        C1 --> D1_Start
+        
+        subgraph D1_Sub["step_2_TableBuilder.py"]
+            D1_Start[Start Table Builder]
+            D1_1[Load Excel Data] --> D1_2
+            D1_2[Database Connection<br/>PostgreSQL] --> D1_3
+            D1_3[Entity Resolution<br/>Professors/Courses] --> D1_4
+            D1_4[Caching System] --> D1_5
+            D1_5[Data Validation] --> D1_6_Start
+            
+            subgraph D1_6_Sub["Database Table Generation"]
+                D1_6_Start[Start Generation]
+                D1_6a[professors table] 
+                D1_6b[courses table]
+                D1_6c[classes table]
+                D1_6d[class_timings table]
+                D1_6e[class_exam_timings table]
+                D1_6_Start --> D1_6a
+                D1_6a --> D1_6b
+                D1_6b --> D1_6c
+                D1_6c --> D1_6d
+                D1_6d --> D1_6e
+                D1_6e --> D1_6_End[Tables Created]
+            end
+            
+            D1_6_End --> D1_7
+            D1_7[Statistics Collection<br/>& Logging]
+            D1_Start --> D1_1
+            D1_7 --> D1_End[Table Build Complete]
+        end
+        
+        D1_End -->|Structured Data| D2[Database Ready for ML]
+    end
+    
+    %% ========== PHASE 3: MACHINE LEARNING ==========
+    subgraph Phase3["Phase 3: Machine Learning (Sequential)"]
+        direction TB
+        
+        D2 --> E1_Start
+        
+        subgraph E1_Sub["step_3_BidPrediction.py"]
+            E1_Start[Start Prediction]
+            E1_1[Load Database Data] --> E1_2_Start
+            
+            subgraph E1_2_Sub["Feature Engineering Pipeline"]
+                E1_2_Start[Start Engineering]
+                E1_2a[Course Code Decomposition<br/>school/level/number] --> E1_2b
+                E1_2b[Bidding Window Features] --> E1_2c
+                E1_2c[Day-of-Week Encoding<br/>one-hot] --> E1_2d
+                E1_2d[Instructor Categorical Encoding] --> E1_2e
+                E1_2e[Numeric Feature Scaling]
+                E1_2_Start --> E1_2a
+                E1_2e --> E1_2_End[Features Ready]
+            end
+            
+            E1_2_End --> E1_3_Start
+            
+            subgraph E1_3_Sub["Three-Model Inference"]
+                E1_3_Start[Start Modeling]
+                E1_3a[Classification Model<br/>Bid Probability Prediction] --> E1_3b
+                E1_3b[Median Bid Regression<br/>Median Price Prediction] --> E1_3c
+                E1_3c[Minimum Bid Regression<br/>Min Price Prediction]
+                E1_3_Start --> E1_3a
+                E1_3c --> E1_3_End[Models Complete]
+            end
+            
+            E1_3_End --> E1_4_Start
+            
+            subgraph E1_4_Sub["Uncertainty Quantification"]
+                E1_4_Start[Start Uncertainty]
+                E1_4a[T-Distribution Fitting<br/>Validation Errors] --> E1_4b
+                E1_4b[Entropy Confidence Scoring] --> E1_4c
+                E1_4c[Percentile Safety Factors<br/>1%-99%]
+                E1_4_Start --> E1_4a
+                E1_4c --> E1_4_End[Uncertainty Complete]
+            end
+            
+            E1_4_End --> E1_5
+            E1_5[Model Persistence<br/>.cbm files]
+            E1_Start --> E1_1
+            E1_5 --> E1_End[Prediction Complete]
+        end
+        
+        E1_End -->|Generated Predictions| E2[Predictions with Uncertainty]
+        E2 --> E3[Safety Factor Application]
+        E3 --> E4[Recommended Bid Calculation]
+        E4 --> E5[Database Storage]
+    end
+    
+    %% ========== ORCHESTRATION LAYER ==========
+    subgraph Orchestration["Orchestration Layer"]
+        direction TB
+        
+        O1[run_pipeline.sh] --> O2_Start
+        subgraph O2_Sub["Pipeline Control"]
+            O2_Start[Start Control]
+            O2a[Parallel Step 1 Execution] --> O2b
+            O2b[Wait for Completion] --> O2c
+            O2c[Sequential Step 2] --> O2d
+            O2d[Sequential Step 3] --> O2e
+            O2e[Error Handling & Logging]
+            O2_Start --> O2a
+            O2e --> O2_End[Control Complete]
+        end
+        
+        O3[config.py] -->|Configuration| O2_Start
+        O4[Environment Variables] -->|Database Credentials| O2_Start
+    end
+    
+    %% ========== DATA FLOW CONNECTIONS ==========
+    Phase1 --> Phase2
+    Phase2 --> Phase3
+    
+    Orchestration -->|Controls| Phase1
+    Orchestration -->|Controls| Phase2
+    Orchestration -->|Controls| Phase3
+    
+    %% ========== OUTPUTS ==========
+    Phase3 --> F1[Bid Predictions<br/>with Uncertainty]
+    Phase3 --> F2[Safety Factor Table<br/>.csv format]
+    Phase2 --> F3[Structured Database<br/>PostgreSQL]
+    
+    %% ========== EXTERNAL DEPENDENCIES ==========
+    subgraph Dependencies["External Dependencies"]
+        G1[Chrome Browser]
+        G2[PostgreSQL DB]
+        G3[Python 3.x]
+        G4[CatBoost Library]
+    end
+    
+    G1 -->|Required for| Phase1
+    G2 -->|Required for| Phase2
+    G3 -->|Runtime| Phase1
+    G3 -->|Runtime| Phase2
+    G3 -->|Runtime| Phase3
+    G4 -->|ML Framework| Phase3
+    
+    %% ========== STYLE DEFINITIONS ==========
+    classDef phase fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef component fill:#f3e5f5,stroke:#4a148c,stroke-width:1px
+    classDef subcomponent fill:#f1f8e9,stroke:#33691e,stroke-width:1px
+    classDef data fill:#fff3e0,stroke:#e65100,stroke-width:1px
+    classDef output fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef dependency fill:#fce4ec,stroke:#880e4f,stroke-width:1px
+    
+    class Phase1,Phase2,Phase3,Orchestration phase
+    class StreamA,StreamB,D1_Sub,E1_Sub,O2_Sub component
+    class A2_Sub,A3_Sub,B2_Sub,D1_6_Sub,E1_2_Sub,E1_3_Sub,E1_4_Sub subcomponent
+    class A4,B3,C1,D2,E2 data
+    class F1,F2,F3 output
+    class Dependencies dependency
+
+%% ## Flowchart Legend
+%% 
+%% ### Phase Colors
+%% - **Blue**: Data Collection Phase (Parallel execution)
+%% - **Purple**: Data Processing Phase (Sequential)
+%% - **Green**: Machine Learning Inference Phase (Sequential)
+%% - **Orange**: Orchestration Layer
+%% 
+%% ### Component Types
+%% - **Rectangles**: Main pipeline components
+%% - **Subgraphs**: Detailed internal processes
+%% - **Rounded Rectangles**: Data outputs
+%% - **Hexagons**: External dependencies
+%% 
+%% ### Key Architectural Patterns
+%% 1. **Parallel Execution**: Step 1 runs Stream A and Stream B concurrently
+%% 2. **Sequential Processing**: Steps 2 and 3 run in sequence after Step 1 completes
+%% 3. **Modular Design**: Each component has clear responsibilities
+%% 4. **Data Flow**: Clear progression from raw data to predictions
+%% 5. **Error Boundaries**: Each phase can fail independently
+%% 
+%% ### Critical Paths
+%% 1. **Scraping Path**: BOSS Website → HTML → Excel → Database
+%% 2. **ML Inference Path**: Pre-trained Models + Database → Features → Predictions
+%% 3. **Control Path**: Bash script → Parallel steps → Sequential steps
+%% 
+%% ### Important Notes
+%% - **Model Training**: Happens separately in V4_03_catboost_training.ipynb (not part of this pipeline)
+%% - **Step 3**: Loads pre-trained models and generates predictions (does NOT train models)
+%% - **Classes Creation**: Step 2 creates class records BEFORE Step 3 predictions
+%% 
+%% ### Performance Considerations
+%% - **Parallelism**: Step 1 components run concurrently
+%% - **Caching**: Entity resolution uses caching for performance
+%% - **Batch Processing**: Large datasets processed in batches
+%% - **Connection Pooling**: Database connections managed efficiently
+%% 
+%% ### Error Handling Points
+%% 1. **Scraping Failures**: Retry mechanisms in step_1c
+%% 2. **Database Errors**: Connection validation in step_2
+%% 3. **Model Training**: Validation splits and early stopping
+%% 4. **Pipeline Control**: Exit codes and logging in run_pipeline.sh

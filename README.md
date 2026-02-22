@@ -120,7 +120,99 @@
 
 ---
 
-## **6. Crediting the Author**
+## **6. Automated Login (For Cloud Deployment)**
+
+The scraper now supports fully automated login with TOTP-based MFA, enabling deployment on cloud containers with cron jobs.
+
+### **Setup**
+
+1. **Install dependencies**:
+   ```bash
+   pip install pyotp
+   ```
+
+2. **Configure environment variables** in `.env`:
+   ```bash
+   BOSS_EMAIL=your.email.2023@business.smu.edu.sg
+   BOSS_PASSWORD=your_password_here
+   BOSS_MFA_SECRET=your_mfa_secret_key
+   ```
+
+3. **Get your MFA Secret**:
+   - Open Microsoft Authenticator app
+   - Select your SMU account
+   - Tap "Set up" → "Can't scan?"
+   - Copy the secret key (Base32 encoded string)
+
+### **Usage**
+
+```python
+from step_1c_ScrapeOverallResults import ScrapeOverallResults
+
+# Automated login
+scraper = ScrapeOverallResults()
+success = scraper.run(
+    term='2025-26_T1',
+    automated_login=True  # Enable automated login
+)
+```
+
+Or for the class scraper:
+
+```python
+from step_1a_BOSSClassScraper import BOSSClassScraper
+
+scraper = BOSSClassScraper()
+success = scraper.run_full_scraping_process(
+    automated_login=True  # Enable automated login
+)
+```
+
+### **Security Notes**
+- Store credentials securely using environment variables
+- Never commit `.env` files with real credentials
+- The MFA secret is as sensitive as your password - keep it secure
+
+---
+
+## **7. AI-Powered Professor Name Normalization**
+
+The pipeline uses **Google Gemini 2.5 Flash** (free tier) to normalize professor names from various formats into standardized surnames for database matching.
+
+### **Setup**
+
+1. **Get a Gemini API Key** (free):
+   - Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
+   - Create a new API key
+   - The free tier includes 1,500 requests/day for Gemini 2.5 Flash
+
+2. **Configure environment variable** in `.env`:
+   ```bash
+   GEMINI_API_KEY=your_gemini_api_key_here
+   ```
+
+3. **Install dependencies** (already in requirements.txt):
+   ```bash
+   pip install google-genai
+   ```
+
+### **How It Works**
+
+- The `step_2_TableBuilder.py` script uses Gemini LLM to identify surnames from various name formats
+- Example: `"Dr. John Smith Jr."` → `"Smith"`
+- Processes names in batches of 50 for efficiency
+- Falls back to rule-based normalization if LLM is unavailable
+
+### **Configuration**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `llm_model_name` | `gemini-2.5-flash` | Gemini model version |
+| `llm_batch_size` | `50` | Names processed per API call |
+
+---
+
+## **8. Crediting the Author**
 
 If you use this project or its models in your work, please credit **Tan Zhong Yan** in the following way on GitHub:
 

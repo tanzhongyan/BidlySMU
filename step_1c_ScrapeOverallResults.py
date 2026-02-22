@@ -1,21 +1,28 @@
 # Import global configuration settings
 from config import *
 
+# Import shared utilities
+from util import (
+    setup_driver,
+    wait_for_manual_login,
+    perform_automated_login,
+    transform_term_format,
+    get_bidding_round_info_for_term,
+    setup_logger
+)
+
 # Import dependencies
 import os
 import re
 import sys
 import time
-import logging
 import pandas as pd
 from datetime import datetime
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
+
 
 class ScrapeOverallResults:
     """
@@ -55,11 +62,7 @@ class ScrapeOverallResults:
             self.boss_schedule = [(dt, name) for dt, name, suffix in schedule_for_term]
         
         # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = setup_logger(__name__)
         
     def _determine_current_bidding_phase(self):
         """
@@ -100,7 +103,6 @@ class ScrapeOverallResults:
             normalized = normalized.replace("Rnd ", "Round ").replace("Win ", "Window ")
             
             # Extract round and window using regex
-            import re
             match = re.search(r'Round\s+(\d+[A-Z]*)\s+Window\s+(\d+)', normalized)
             
             if match:
@@ -119,43 +121,12 @@ class ScrapeOverallResults:
     
     def _setup_driver(self):
         """Setup Chrome WebDriver with appropriate options"""
-        chrome_options = Options()
-        
-        if self.headless:
-            chrome_options.add_argument("--headless")
-        
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        
         try:
-            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver = setup_driver(headless=self.headless)
             self.logger.info("Chrome WebDriver initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize WebDriver: {str(e)}")
             raise
-    
-    def wait_for_manual_login(self):
-        """
-        Wait for manual login and Microsoft Authenticator process completion.
-        """
-        print("Please log in manually and complete the Microsoft Authenticator process.")
-        print("Waiting for BOSS dashboard to load...")
-        
-        wait = WebDriverWait(self.driver, 120)
-        
-        try:
-            # Wait for login success indicators
-            wait.until(EC.presence_of_element_located((By.ID, "Label_UserName")))
-            wait.until(EC.presence_of_element_located((By.XPATH, "//a[contains(text(),'Sign out')]")))
-            
-            username = self.driver.find_element(By.ID, "Label_UserName").text
-            print(f"Login successful! Logged in as {username}")
-            
-        except TimeoutException:
-            print("Login failed or timed out. Could not detect login elements.")
-            raise Exception("Login failed")
-        
-        time.sleep(2)
     
     def _navigate_to_overall_results(self):
         """Navigate to the Overall Results page"""
@@ -610,7 +581,6 @@ class ScrapeOverallResults:
                     self.logger.debug(f"Pagination info: {info_text}")
                     
                     # Extract current page and total pages
-                    import re
                     match = re.search(r'(\d+)\s+items\s+in\s+(\d+)\s+pages', info_text)
                     if match:
                         total_items = int(match.group(1))
@@ -769,7 +739,6 @@ class ScrapeOverallResults:
             if info_elements:
                 info_text = info_elements[0].text
                 # Extract total pages from text like "1129 items in 23 pages"
-                import re
                 match = re.search(r'(\d+)\s+items\s+in\s+(\d+)\s+pages', info_text)
                 if match:
                     total_items = int(match.group(1))
@@ -921,7 +890,7 @@ class ScrapeOverallResults:
             self.logger.error(f"Failed to scrape term data: {str(e)}")
             raise
     
-    def scrape_multiple_terms(self, terms_config, output_dir="./"):
+    def scrape_multiple_terms(self, terms_config, output_dir="./", automated_login=False):
         """
         Scrape data for multiple terms
         
@@ -932,6 +901,8 @@ class ScrapeOverallResults:
                                     {'term': '2024-25 Term 2', 'round': None, 'window': None}
                                 ]
             output_dir (str): Directory to save Excel files
+            automated_login (bool): If True, use automated login with TOTP. 
+                                   If False, wait for manual login.
         """
         try:
             # Create output directory
@@ -940,9 +911,14 @@ class ScrapeOverallResults:
             # Setup driver
             self._setup_driver()
             
-            # Navigate to login page and wait for manual login
+            # Navigate to login page
             self.driver.get("https://boss.intranet.smu.edu.sg/")
-            self.wait_for_manual_login()
+            
+            # Perform login (automated or manual)
+            if automated_login:
+                perform_automated_login(self.driver, logger=self.logger)
+            else:
+                wait_for_manual_login(self.driver, logger=self.logger)
             
             # Process each term configuration
             for i, config in enumerate(terms_config):
@@ -975,54 +951,22 @@ class ScrapeOverallResults:
         finally:
             self.close()
 
-    def _transform_term_format(self, short_term):
-        """
-        Converts a short-form term into the website's full-text format.
-        Example: '2025-26_T1' -> '2025-26 Term 1'
-        
-        Args:
-            short_term (str): The term in short format (e.g., 'YYYY-YY_TX').
-            
-        Returns:
-            str: The term in the website's format.
-        """
-        # Mapping from short-form to the website's text.
-        term_map = {
-            'T1': 'Term 1',
-            'T2': 'Term 2',
-            'T3A': 'Term 3A',
-            'T3B': 'Term 3B'
-        }
-        
-        try:
-            # Split the string into the year part and the term part (e.g., '2025-26' and 'T1')
-            year_part, term_part = short_term.split('_')
-            
-            # Look up the full term name from our map.
-            full_term_name = term_map.get(term_part)
-            
-            if full_term_name:
-                # Combine them back into the final format.
-                return f"{year_part} {full_term_name}"
-            else:
-                # If the term part is not in our map, raise an error.
-                raise ValueError(f"Unknown term suffix: '{term_part}'")
-                
-        except (ValueError, IndexError) as e:
-            self.logger.error(f"Invalid term format: '{short_term}'. Expected format like '2025-26_T1'.")
-            raise e
-    
-    def run(self, term, bid_round=None, bid_window=None, output_dir="./script_input/overallBossResults", auto_detect_phase=True):
+    def run(self, term, bid_round=None, bid_window=None, output_dir="./script_input/overallBossResults", auto_detect_phase=True, automated_login=False):
         """
         Runs the scraper for a single term, handling term format transformation internally.
         
         Args:
             term (str): Term to scrape in short format (e.g., '2025-26_T1').
-            ... (other args are the same) ...
+            bid_round (str): Specific bid round to filter by.
+            bid_window (str): Specific bid window to filter by.
+            output_dir (str): Directory to save output files.
+            auto_detect_phase (bool): Whether to auto-detect current bidding phase.
+            automated_login (bool): If True, use automated login with TOTP. 
+                                   If False, wait for manual login.
         """
         try:
             # First, transform the short-form term into the website-friendly format.
-            website_term = self._transform_term_format(term)
+            website_term = transform_term_format(term)
             
             # Auto-detect current bidding phase if enabled and no explicit round/window provided
             if auto_detect_phase and (bid_round is None or bid_window is None):
@@ -1040,7 +984,11 @@ class ScrapeOverallResults:
             
             self._setup_driver()
             self.driver.get("https://boss.intranet.smu.edu.sg/")
-            self.wait_for_manual_login()
+            
+            if automated_login:
+                perform_automated_login(self.driver, logger=self.logger)
+            else:
+                wait_for_manual_login(self.driver, logger=self.logger)
             
             # Scrape the term data using the correctly formatted term.
             data = self.scrape_term_data(
@@ -1065,6 +1013,7 @@ class ScrapeOverallResults:
         if self.driver:
             self.driver.quit()
             self.logger.info("WebDriver closed")
+
 
 if __name__ == "__main__":
     scraper = ScrapeOverallResults(headless=False, delay=5)

@@ -1,19 +1,28 @@
 # Import global configuration settings
 from config import *
 
+# Import shared utilities
+from util import (
+    setup_driver,
+    wait_for_manual_login,
+    perform_automated_login,
+    get_term_code_map,
+    get_all_terms,
+    generate_academic_year_range,
+    get_bidding_round_info_for_term
+)
+
 # Import dependencies
 import os
 import csv
 import sys
 import time
 from datetime import datetime
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import TimeoutException
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.support import expected_conditions as EC
+
 
 class BOSSClassScraper:
     """
@@ -26,8 +35,8 @@ class BOSSClassScraper:
         """
         Initialize the BOSS Class Scraper with configuration parameters.
         """
-        self.term_code_map = {'T1': '10', 'T2': '20', 'T3A': '31', 'T3B': '32'}
-        self.all_terms = ['T1', 'T2', 'T3A', 'T3B']
+        self.term_code_map = get_term_code_map()
+        self.all_terms = get_all_terms()
         self.driver = None
         self.min_class_number = 1000
         self.max_class_number = 5000
@@ -40,49 +49,20 @@ class BOSSClassScraper:
         """
         Determines the bidding round folder name for a given academic term based on the current time.
         """
-        # Get the schedule for the specific academic term
-        schedule = self.bidding_schedule.get(ay_term)
-        if not schedule:
-            return None
+        return get_bidding_round_info_for_term(ay_term, now, self.bidding_schedule)
 
-        # Find the correct window from the schedule
-        for results_date, _, folder_suffix in schedule:
-            if now < results_date:
-                return f"{ay_term}_{folder_suffix}"
-        return None
-
-    def wait_for_manual_login(self):
-        """Wait for manual login and Microsoft Authenticator process completion."""
-        print("Please log in manually and complete the Microsoft Authenticator process.")
-        print("Waiting for BOSS dashboard to load...")
-        wait = WebDriverWait(self.driver, 120)
-        try:
-            wait.until(EC.presence_of_element_located((By.ID, "Label_UserName")))
-            username = self.driver.find_element(By.ID, "Label_UserName").text
-            print(f"Login successful! Logged in as {username}")
-        except TimeoutException:
-            raise Exception("Login failed or timed out.")
-        time.sleep(1)
-
-    def scrape_and_save_html(self, start_ay_term=START_AY_TERM, end_ay_term=END_AY_TERM, base_dir='script_input/classTimingsFull'):
+    def scrape_and_save_html(self, start_ay_term=START_AY_TERM, end_ay_term=END_ArY_TERM, base_dir='script_input/classTimingsFull'):
         """
         Scrapes class details, always performing a full scan from 1000-5000.
         """
         now = datetime.now()
-        start_year = int(start_ay_term[:4])
-        end_year = int(end_ay_term[:4])
-        all_academic_years = [f"{year}-{(year + 1) % 100:02d}" for year in range(start_year, end_year + 1)]
-        all_ay_terms = [f"{ay}_{term}" for ay in all_academic_years for term in self.all_terms]
         
         try:
-            start_idx = all_ay_terms.index(start_ay_term)
-            end_idx = all_ay_terms.index(end_ay_term)
-        except ValueError:
-            print("Invalid start or end term provided.")
+            ay_terms_to_scrape = generate_academic_year_range(start_ay_term, end_ay_term)
+        except ValueError as e:
+            print(str(e))
             return
             
-        ay_terms_to_scrape = all_ay_terms[start_idx:end_idx+1]
-        
         for ay_term in ay_terms_to_scrape:
             print(f"\nProcessing Academic Term: {ay_term}")
             
@@ -183,17 +163,25 @@ class BOSSClassScraper:
         
         print(f"CSV updated. Total valid files now: {len(existing_filepaths) + len(new_filepaths)}")
 
-    def run_full_scraping_process(self, start_ay_term=START_AY_TERM, end_ay_term=END_AY_TERM):
-        """Run the complete scraping process for a specified term range."""
+    def run_full_scraping_process(self, start_ay_term=START_AY_TERM, end_ay_term=END_AY_TERM, automated_login=False):
+        """
+        Run the complete scraping process for a specified term range.
+        
+        Args:
+            start_ay_term (str): Starting academic year term.
+            end_ay_term (str): Ending academic year term.
+            automated_login (bool): If True, use automated login with TOTP. 
+                                   If False, wait for manual login.
+        """
         try:
-            options = webdriver.ChromeOptions()
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver = setup_driver(headless=False)
             
             self.driver.get("https://boss.intranet.smu.edu.sg/")
-            self.wait_for_manual_login()
+            
+            if automated_login:
+                perform_automated_login(self.driver)
+            else:
+                wait_for_manual_login(self.driver)
             
             self.scrape_and_save_html(start_ay_term, end_ay_term)
             self.generate_scraped_filepaths_csv()
@@ -207,8 +195,9 @@ class BOSSClassScraper:
                 self.driver.quit()
             print("Process completed!")
 
+
 if __name__ == "__main__":
     scraper = BOSSClassScraper()
-    success = scraper.run_full_scraping_process(START_AY_TERM, END_AY_TERM)
+    success = scraper.run_full_scraping_process(START_AY_TERM, END_AY_TERM, True)
     if not success:
         sys.exit(1) # Exit with error
