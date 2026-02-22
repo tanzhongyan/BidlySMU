@@ -8,7 +8,7 @@ from util import (
     perform_automated_login,
     transform_term_format,
     get_bidding_round_info_for_term,
-    setup_logger
+    get_logger
 )
 
 # Import dependencies
@@ -62,7 +62,7 @@ class ScrapeOverallResults:
             self.boss_schedule = [(dt, name) for dt, name, suffix in schedule_for_term]
         
         # Setup logging
-        self.logger = setup_logger(__name__)
+        self.logger = get_logger(__name__)
         
     def _determine_current_bidding_phase(self):
         """
