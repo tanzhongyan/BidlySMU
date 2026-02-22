@@ -1,1 +1,0 @@
-- SERIALIZABLE isolation level for transaction consistency
