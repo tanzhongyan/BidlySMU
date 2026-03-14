@@ -1,8 +1,15 @@
 """
-Shared utility functions for BOSS web scraping modules.
+Shared utility functions for BOSS web scraping modules with proper logging.
 
-This module contains common utilities used by multiple scraper scripts,
-including WebDriver setup and manual login handling.
+This module contains:
+- Centralized logging configuration and utilities
+- Common utilities for web scraping (WebDriver setup, login handling, etc.)
+
+Logging Best Practices:
+- Use module-level loggers with logging.getLogger(__name__)
+- Use lazy formatting with %s placeholders for performance
+- Configure logging once at application entry point
+- Don't call basicConfig() in library code
 """
 
 # Import global configuration settings
@@ -10,9 +17,13 @@ from config import *
 
 # Import dependencies
 import os
+import json
 import time
 import logging
 import pyotp
+from logging.handlers import RotatingFileHandler
+from datetime import datetime
+from typing import Dict, Any, Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -22,6 +33,101 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 
+
+# =============================================================================
+# Logging Utilities
+# =============================================================================
+
+def configure_logging(
+    level: int = logging.INFO,
+    log_file: str = 'logs/bidlysmu.log',
+    max_bytes: int = 10_000_000,  # 10MB
+    backup_count: int = 5,
+    log_to_console: bool = True
+) -> None:
+    """
+    Configure logging for the entire application.
+    
+    This should be called ONCE at the application entry point.
+    Do not call this in library modules.
+    
+    Args:
+        level: Minimum logging level (default: INFO)
+        log_file: Path to log file (default: logs/bidlysmu.log)
+        max_bytes: Maximum size of log file before rotation (default: 10MB)
+        backup_count: Number of backup files to keep (default: 5)
+        log_to_console: Whether to also log to console (default: True)
+    """
+    # Create logs directory
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    
+    # Build handlers list
+    handlers = []
+    
+    # File handler with rotation
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(level)
+    handlers.append(file_handler)
+    
+    # Console handler
+    if log_to_console:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        handlers.append(console_handler)
+    
+    # Formatter
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    for handler in handlers:
+        handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=level,
+        handlers=handlers,
+        force=True  # Override any existing configuration
+    )
+    
+    # Log configuration completion
+    logger = logging.getLogger(__name__)
+    logger.info("Logging configured: level=%s, file=%s", 
+                logging.getLevelName(level), log_file)
+
+
+def get_logger(name: str) -> logging.Logger:
+    """
+    Get a logger instance for the given module name.
+    
+    Usage:
+        # At module level (not inside functions/classes)
+        logger = get_logger(__name__)
+        
+        # Then use it
+        logger.info("Message with %s formatting", variable)
+        logger.error("Error occurred", exc_info=True)
+    
+    Args:
+        name: Logger name, typically __name__ from the calling module
+        
+    Returns:
+        logging.Logger: Configured logger instance
+    """
+    return logging.getLogger(name)
+
+
+# =============================================================================
+# WebDriver and Login Utilities
+# =============================================================================
 
 def setup_driver(headless=False):
     """
@@ -85,7 +191,7 @@ def wait_for_manual_login(driver, timeout=120, logger=None):
         wait.until(EC.presence_of_element_located((By.XPATH, "//a[contains(text(),'Sign out')]")))
         
         username = driver.find_element(By.ID, "Label_UserName").text
-        log(f"Login successful! Logged in as {username}")
+        log("Login successful! Logged in as %s", username)
         
     except TimeoutException:
         error_msg = "Login failed or timed out. Could not detect login elements."
@@ -229,24 +335,6 @@ def get_bidding_round_info_for_term(ay_term, now, bidding_schedule=None):
     return None
 
 
-def setup_logger(name, level=logging.INFO):
-    """
-    Setup a logger with consistent formatting.
-    
-    Args:
-        name (str): Name of the logger.
-        level (int): Logging level. Default is logging.INFO.
-        
-    Returns:
-        logging.Logger: Configured logger instance.
-    """
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    return logging.getLogger(name)
-
-
 def perform_automated_login(driver, email=None, password=None, mfa_secret=None, timeout=60, logger=None):
     """
     Perform automated login to BOSS system with TOTP-based MFA.
@@ -309,7 +397,7 @@ def perform_automated_login(driver, email=None, password=None, mfa_secret=None, 
         log("Waiting for Microsoft login page...")
         wait.until(EC.presence_of_element_located((By.ID, "i0116")))
         
-        log(f"Entering email: {email}")
+        log("Entering email: %s", email)
         email_input = driver.find_element(By.ID, "i0116")
         email_input.clear()
         email_input.send_keys(email)
@@ -362,7 +450,7 @@ def perform_automated_login(driver, email=None, password=None, mfa_secret=None, 
         log("Generating TOTP code...")
         totp = pyotp.TOTP(mfa_secret)
         current_code = totp.now()
-        log(f"Generated TOTP code: {current_code}")
+        log("Generated TOTP code: %s", current_code)
         
         # Wait for OTP input field
         log("Entering verification code...")
@@ -380,7 +468,7 @@ def perform_automated_login(driver, email=None, password=None, mfa_secret=None, 
         wait.until(EC.presence_of_element_located((By.ID, "Label_UserName")))
         
         username = driver.find_element(By.ID, "Label_UserName").text
-        log(f"Login successful! Logged in as {username}")
+        log("Login successful! Logged in as %s", username)
         
         time.sleep(2)
         return username
@@ -395,3 +483,7 @@ def perform_automated_login(driver, email=None, password=None, mfa_secret=None, 
         if logger:
             logger.error(error_msg)
         raise Exception(error_msg)
+
+
+# Legacy alias for backward compatibility
+setup_logger = get_logger

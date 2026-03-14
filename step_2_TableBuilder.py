@@ -1,7 +1,7 @@
 # Import global configuration settings
 from config import *
 
-# Import dependencieS
+# Import dependencies
 import os
 import re
 import sys
@@ -20,13 +20,19 @@ from typing import List, Optional, Tuple
 from collections import Counter, defaultdict
 from dotenv import load_dotenv
 from google import genai 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import SQLAlchemyError
+
+# Import database modules
+from util import get_logger
+from db_manager import DatabaseManager
 
 # Set up logging
 import traceback
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Use centralized logging utility
+logger = get_logger("bidlysmu.tablebuilder")
 
 class TableBuilder:
     """Comprehensive table builder for university class management system"""
@@ -216,27 +222,39 @@ class TableBuilder:
         else:
             logger.warning("⚠️ GEMINI_API_KEY not found. LLM normalization will be skipped.")
 
-        # Initialize database connection
+        # Initialize database connection with pooling
         self.engine = None
         self.db_connection = None
-        self.db_transaction = None
+        self.db_manager = None  # DatabaseManager instance for connection pooling
 
     def connect_database(self):
-        """Connect to PostgreSQL database using SQLAlchemy and begin a transaction."""
+        """Connect to PostgreSQL database using DatabaseManager with connection pooling."""
         try:
+            # Create database URL
             db_url = (
                 f"postgresql+psycopg2://{self.db_config['user']}:{self.db_config['password']}"
                 f"@{self.db_config['host']}:{self.db_config['port']}/{self.db_config['database']}"
             )
-            self.engine = create_engine(db_url)
-            self.db_connection = self.engine.connect()
-            self.db_transaction = self.db_connection.begin()  # Start a transaction
             
-            logger.info("✅ Database connection established and transaction started.")
-            return True
+            # Initialize DatabaseManager with connection pooling
+            self.db_manager = DatabaseManager(db_url, logger_name="bidlysmu.db")
+            
+            # Get engine and connection with retry logic
+            self.engine = self.db_manager.get_engine()
+            self.db_connection = self.db_manager.get_connection()
+            
+            logger.info("✅ Database connection with pooling established")
+            
+            # Test connection
+            if self.db_manager.test_connection():
+                logger.info("✅ Database connection test successful")
+                return True
+            else:
+                logger.error("❌ Database connection test failed")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Database connection failed: {e}")
-            traceback.print_exc()
+            logger.error(f"❌ Database connection failed: {e}", exc_info=True)
             return False
 
     def load_or_cache_data(self):
@@ -507,82 +525,146 @@ class TableBuilder:
             logger.error(f"❌ Failed to load raw data: {e}")
             return False
 
-    def _execute_db_operations(self):
-        """Executes all collected INSERT, UPDATE, and UPSERT operations within the transaction."""
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from sqlalchemy import text
-        from sqlalchemy.exc import SQLAlchemyError
-
-        logger.info("Executing database operations...")
-        conn = self.db_connection
-
+    def upload_csvs_to_database(self):
+        """
+        Upload CSV files to database within a transaction.
+        
+        Reads CSV files from script_output directory and uploads them to the database.
+        All operations are wrapped in a transaction - if any upload fails, all changes
+        are rolled back. This allows retrying the upload without regenerating CSVs.
+        
+        Returns:
+            bool: True if all uploads successful, False otherwise
+        """
+        logger.info("📤 Uploading CSV files to database...")
+        
+        # Define CSV to table mapping
+        # Format: 'csv_filename': ('table_name', 'operation', {'option': 'value'})
+        csv_operations = [
+            # INSERT operations (simple bulk inserts)
+            ('new_professors.csv', 'insert', {'table': 'professors'}),
+            ('new_courses.csv', 'insert', {'table': 'courses'}),
+            ('new_acad_term.csv', 'insert', {'table': 'acad_term'}),
+            ('new_classes.csv', 'insert', {'table': 'classes'}),
+            ('new_class_timing.csv', 'insert', {'table': 'class_timing'}),
+            ('new_class_exam_timing.csv', 'insert', {'table': 'class_exam_timing'}),
+            ('new_bid_windows.csv', 'insert', {'table': 'bid_window'}),
+            
+            # UPDATE operations (update existing records by id)
+            ('update_professor.csv', 'update', {'table': 'professors', 'id_column': 'id', 'array_columns': ['boss_aliases']}),
+            ('update_courses.csv', 'update', {'table': 'courses', 'id_column': 'id'}),
+            ('update_classes.csv', 'update', {'table': 'classes', 'id_column': 'id'}),
+            
+            # UPSERT operations (INSERT ON CONFLICT)
+            ('class_availability.csv', 'upsert', {
+                'table': 'class_availability', 
+                'index_elements': ['class_id', 'bid_window_id']
+            }),
+            ('bid_result.csv', 'upsert', {
+                'table': 'bid_result',
+                'index_elements': ['bid_window_id', 'class_id']
+            }),
+        ]
+        
         try:
-            # Helper for DataFrame to dictionary conversion, handling NaN
-            def df_to_records(df):
-                return df.where(pd.notna(df), None).to_dict('records')
-
-            # 1. Simple INSERTS
-            insert_map = {
-                'professors': self.new_professors,
-                'courses': self.new_courses,
-                'acad_term': self.new_acad_terms,
-                'classes': self.new_classes,
-                'class_timing': self.new_class_timings,
-                'class_exam_timing': self.new_class_exam_timings,
-                'bid_window': self.new_bid_windows
-            }
-            for table_name, data_list in insert_map.items():
-                if data_list:
-                    df = pd.DataFrame(data_list)
-                    logger.info(f"Inserting {len(df)} records into {table_name}...")
-                    # Use pandas to_sql for efficient bulk inserts
-                    df.to_sql(table_name, conn, if_exists='append', index=False, chunksize=1000)
-
-            # 2. UPDATES
-            def execute_update(table, records):
-                logger.info(f"Updating {len(records)} records in {table}...")
-                for record in records:
-                    record_id = record.pop('id')
-                    # Using SQLAlchemy text to prevent SQL injection
-                    stmt = text(f"UPDATE {table} SET {', '.join([f'{k} = :{k}' for k in record.keys()])} WHERE id = :id")
-                    conn.execute(stmt, {**record, 'id': record_id})
-            
-            if self.update_courses:
-                execute_update('courses', self.update_courses)
-            if hasattr(self, 'update_classes') and self.update_classes:
-                execute_update('classes', self.update_classes)
-            if self.update_professors:
-                logger.info(f"Updating {len(self.update_professors)} records in professors...")
-                for record in self.update_professors:
-                    record_id = record.pop('id')
-                    # boss_aliases is a text[] in postgres, format correctly
-                    aliases = json.loads(record['boss_aliases'])
-                    stmt = text("UPDATE professors SET boss_aliases = :boss_aliases WHERE id = :id")
-                    conn.execute(stmt, {'boss_aliases': aliases, 'id': record_id})
-            
-            # 3. UPSERTS (INSERT ON CONFLICT)
-            def execute_upsert(table, records, index_elements):
-                if not records: return
-                logger.info(f"Upserting {len(records)} records into {table}...")
-                stmt = pg_insert(text(table)).values(records)
-                update_cols = {col.name: col for col in stmt.excluded if col.name not in index_elements}
-                stmt = stmt.on_conflict_do_update(index_elements=index_elements, set_=update_cols)
-                conn.execute(stmt)
-
-            if self.new_class_availability:
-                execute_upsert('class_availability', df_to_records(pd.DataFrame(self.new_class_availability)), ['class_id', 'bid_window_id'])
-            
-            all_bid_results = self.new_bid_result + getattr(self, 'update_bid_result', [])
-            if all_bid_results:
-                execute_upsert('bid_result', df_to_records(pd.DataFrame(all_bid_results)), ['bid_window_id', 'class_id'])
-
-            logger.info("✅ Database operations executed successfully within transaction.")
+            # Use SQLAlchemy transaction context manager for automatic commit/rollback
+            with self.db_connection.begin():
+                logger.info("🔄 Starting database transaction...")
+                
+                for csv_filename, operation, options in csv_operations:
+                    csv_path = os.path.join(self.output_base, csv_filename)
+                    
+                    # Skip if CSV doesn't exist
+                    if not os.path.exists(csv_path):
+                        logger.debug(f"⏭️ Skipping {csv_filename} - file not found")
+                        continue
+                    
+                    # Read CSV
+                    df = pd.read_csv(csv_path)
+                    if df.empty:
+                        logger.debug(f"⏭️ Skipping {csv_filename} - empty file")
+                        continue
+                    
+                    table_name = options['table']
+                    logger.info(f"📥 {operation.upper()}: {len(df)} records from {csv_filename} to {table_name}")
+                    
+                    if operation == 'insert':
+                        # Simple bulk insert
+                        df.to_sql(
+                            table_name,
+                            self.db_connection,
+                            if_exists='append',
+                            index=False,
+                            chunksize=1000,
+                            method='multi'  # Multi-row insert for efficiency
+                        )
+                        
+                    elif operation == 'update':
+                        # Row-by-row update (for smaller update files)
+                        id_column = options.get('id_column', 'id')
+                        array_columns = options.get('array_columns', [])
+                        
+                        records = df.where(pd.notna(df), None).to_dict('records')
+                        for record in records:
+                            record_id = record.pop(id_column)
+                            
+                            # Handle array columns (like boss_aliases)
+                            for col in array_columns:
+                                if col in record and isinstance(record[col], str):
+                                    record[col] = json.loads(record[col])
+                            
+                            # Build SET clause
+                            set_clause = ', '.join([f"{k} = :{k}" for k in record.keys()])
+                            stmt = text(f"UPDATE {table_name} SET {set_clause} WHERE {id_column} = :{id_column}_value")
+                            
+                            # Add id to params with unique key
+                            params = {**record, f"{id_column}_value": record_id}
+                            self.db_connection.execute(stmt, params)
+                            
+                    elif operation == 'upsert':
+                        # INSERT ON CONFLICT
+                        records = df.where(pd.notna(df), None).to_dict('records')
+                        index_elements = options['index_elements']
+                        
+                        # Build insert statement
+                        stmt = pg_insert(table_name).values(records)
+                        
+                        # Determine which columns to update on conflict (all except index elements)
+                        update_cols = {
+                            col.name: col 
+                            for col in stmt.excluded 
+                            if col.name not in index_elements
+                        }
+                        
+                        # Add ON CONFLICT clause
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=index_elements,
+                            set_=update_cols
+                        )
+                        
+                        self.db_connection.execute(stmt)
+                
+                logger.info("✅ All CSV files uploaded successfully - committing transaction")
+                # Transaction commits automatically when exiting context
+                
+            logger.info("🎉 Database upload complete!")
             return True
+            
+        except SQLAlchemyError as e:
+            logger.error(f"❌ Database upload failed: {e}", exc_info=True)
+            # Transaction automatically rolls back on exception
+            logger.info("🔄 Transaction rolled back - CSV files preserved for retry")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during upload: {e}", exc_info=True)
+            return False
 
-        except (SQLAlchemyError, Exception) as e:
-            logger.error(f"❌ Error during database operations: {e}")
-            traceback.print_exc()
-            raise # Re-raise the exception to trigger a rollback
+    def _execute_db_operations(self):
+        """
+        Legacy method for backward compatibility.
+        Now calls upload_csvs_to_database() which reads from CSVs.
+        """
+        return self.upload_csvs_to_database()
 
     def _normalize_professor_name_fallback(self, name: str) -> Tuple[str, str]:
         """
@@ -1994,18 +2076,15 @@ class TableBuilder:
                         else:
                             logger.warning("⚠️ DEBUG: No rows in update_bid_result have median/min values!")
 
-        # The following line is the only change. It has been removed.
-        # to_csv_if_not_empty(self.new_professors, 'new_professors.csv') 
-        
+        # Note: new_professors is handled in Phase 1 (verify folder)
         to_csv_if_not_empty(getattr(self, 'update_professors', []), 'update_professor.csv')
-        # We also no longer need to save new_courses here, as it's handled in Phase 1.
-        # to_csv_if_not_empty(self.new_courses, os.path.join('verify', 'new_courses.csv'))
         to_csv_if_not_empty(self.update_courses, 'update_courses.csv')
         to_csv_if_not_empty(getattr(self, 'update_classes', []), 'update_classes.csv')
         to_csv_if_not_empty(self.new_acad_terms, 'new_acad_term.csv')
         to_csv_if_not_empty(self.new_classes, 'new_classes.csv')
         to_csv_if_not_empty(self.new_class_timings, 'new_class_timing.csv')
         to_csv_if_not_empty(self.new_class_exam_timings, 'new_class_exam_timing.csv')
+        
         update_records = getattr(self, 'update_bid_result', [])
         if update_records:
             logger.info(f"📝 Preparing to save {len(update_records)} bid result updates")
@@ -2019,7 +2098,6 @@ class TableBuilder:
 
         if self.courses_needing_faculty:
             df = pd.DataFrame(self.courses_needing_faculty)
-            # Note: This path should probably also be in the 'verify' folder
             df.to_csv(os.path.join(self.verify_dir, 'courses_needing_faculty.csv'), index=False)
             logger.info(f"✅ Saved {len(self.courses_needing_faculty)} courses needing faculty assignment to the verify folder.")
             
@@ -4728,7 +4806,7 @@ class TableBuilder:
 if __name__ == "__main__":
     builder = TableBuilder()
     
-    # Establish database connection and start transaction
+    # Establish database connection with pooling (no transaction started here)
     if not builder.connect_database():
         sys.exit(1)
 
@@ -4756,21 +4834,34 @@ if __name__ == "__main__":
             raise Exception("Phase 3 failed.")
         print("✅ Phase 3 completed successfully.")
 
-        # --- Final Step: Execute all DB operations ---
-        print("\n--- Executing database writes ---")
-        builder._execute_db_operations()
-
-        # If all steps are successful, commit the transaction
-        builder.db_transaction.commit()
-        print("\n🎉 All phases completed successfully and transaction committed!")
+        # --- Phase 4: Save CSV Checkpoints (always before DB upload) ---
+        print("\n--- Saving CSV Checkpoints ---")
+        builder.save_outputs()
+        print("✅ CSV checkpoints saved.")
+        
+        # --- Phase 5: Upload to Database with Transaction ---
+        print("\n--- Uploading CSVs to Database ---")
+        upload_success = builder.upload_csvs_to_database()
+        
+        if not upload_success:
+            print("❌ Database upload failed. CSVs are preserved - you can retry upload.")
+            sys.exit(1)
+        
+        print("\n🎉 All phases completed successfully!")
 
     except Exception as e:
-        print(f"❌ An error occurred: {e}. Rolling back transaction.")
-        if builder.db_transaction:
-            builder.db_transaction.rollback()
+        print(f"❌ An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     
     finally:
-        if builder.db_connection:
+        # Close database connection
+        if hasattr(builder, 'db_connection') and builder.db_connection:
             builder.db_connection.close()
             print("🔒 Database connection closed.")
+        
+        # Close database manager if it exists
+        if hasattr(builder, 'db_manager') and builder.db_manager:
+            builder.db_manager.close_all_connections()
+            print("🔒 Database connections pooled and closed.")
