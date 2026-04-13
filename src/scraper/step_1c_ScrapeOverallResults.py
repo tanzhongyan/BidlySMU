@@ -1,8 +1,8 @@
 # Import global configuration settings
-from config import *
+from src.config import *
 
 # Import shared utilities
-from util import (
+from src.utils.util import (
     setup_driver,
     wait_for_manual_login,
     perform_automated_login,

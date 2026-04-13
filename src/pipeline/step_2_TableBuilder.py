@@ -1,5 +1,5 @@
 # Import global configuration settings
-from config import *
+from src.config import *
 
 # Import dependencieS
 import os

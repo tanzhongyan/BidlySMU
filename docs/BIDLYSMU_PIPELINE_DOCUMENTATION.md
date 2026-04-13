@@ -4,7 +4,7 @@
 BidlySMU is a comprehensive data pipeline for Singapore Management University (SMU) course bidding prediction system. The pipeline follows an ETL (Extract, Transform, Load) pattern with machine learning integration for predicting minimum and median bid prices for university courses.
 
 **Important Note**: The pipeline consists of two separate workflows:
-1. **Production Pipeline** (`run_pipeline.sh`): Data collection → Processing → Prediction using pre-trained models
+1. **Production Pipeline** (`scripts/run_pipeline.sh`): Data collection → Processing → Prediction using pre-trained models
 2. **Model Training** (`V4_03_catboost_training.ipynb`): Trains the three CatBoost models from historical data (separate process)
 
 ## Architecture Components
@@ -12,7 +12,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 ### 1. Data Acquisition Layer (Step 1)
 **Purpose**: Extract raw data from SMU's BOSS (Bidding Online System for Students) system.
 
-#### 1a. BOSS Class Scraper (`step_1a_BOSSClassScraper.py`)
+#### 1a. BOSS Class Scraper (`src/scraper/step_1a_BOSSClassScraper.py`)
 - **Function**: Scrapes class details from BOSS system using Selenium WebDriver
 - **Key Features**:
   - Full scan of class numbers (1000-5000) for each academic term
@@ -21,7 +21,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
   - HTML file storage in structured directory hierarchy
 - **Dependencies**: Selenium, ChromeDriver, webdriver-manager
 
-#### 1b. HTML Data Extractor (`step_1b_HTMLDataExtractor.py`)
+#### 1b. HTML Data Extractor (`src/scraper/step_1b_HTMLDataExtractor.py`)
 - **Function**: Parses scraped HTML files and extracts structured data
 - **Key Features**:
   - Selenium-based DOM parsing for reliable data extraction
@@ -30,7 +30,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
   - Excel file output generation
 - **Output**: `script_input/raw_data.xlsx`
 
-#### 1c. Scrape Overall Results (`step_1c_ScrapeOverallResults.py`)
+#### 1c. Scrape Overall Results (`src/scraper/step_1c_ScrapeOverallResults.py`)
 - **Function**: Scrapes historical bidding results for model training
 - **Key Features**:
   - Historical data collection across multiple academic years
@@ -40,7 +40,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 ### 2. Data Processing Layer (Step 2)
 **Purpose**: Transform raw data into structured database format.
 
-#### Table Builder (`step_2_TableBuilder.py`)
+#### Table Builder (`src/pipeline/step_2_TableBuilder.py`)
 - **Function**: Processes extracted data and builds relational database tables
 - **Key Features**:
   - Database connection management (PostgreSQL)
@@ -58,7 +58,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 ### 3. Machine Learning Layer (Step 3)
 **Purpose**: Load pre-trained models and generate predictions for bid price forecasting.
 
-#### Bid Prediction (`step_3_BidPrediction.py`)
+#### Bid Prediction (`src/pipeline/step_3_BidPrediction.py`)
 - **Function**: Loads pre-trained CatBoost models and applies them for bid prediction
 - **Note**: Model training happens separately in `V4_03_catboost_training.ipynb`
 - **Key Features**:
@@ -86,7 +86,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
 ### 4. Orchestration Layer
 **Purpose**: Coordinate pipeline execution and error handling.
 
-#### Pipeline Runner (`run_pipeline.sh`)
+#### Pipeline Runner (`scripts/run_pipeline.sh`)
 - **Function**: Bash script orchestrating the entire pipeline
 - **Key Features**:
   - Parallel execution of Step 1 components
@@ -95,7 +95,7 @@ BidlySMU is a comprehensive data pipeline for Singapore Management University (S
   - Error handling and pipeline halting on failures
   - UTF-8 encoding enforcement
 
-#### Configuration Management (`config.py`)
+#### Configuration Management (`src/config.py`)
 - **Function**: Centralized configuration for the entire pipeline
 - **Key Features**:
   - Academic term range configuration
@@ -176,7 +176,7 @@ Pre-trained Models + Structured Data → [3] Bid Prediction → Predictions
 
 ## Pipeline vs Model Training
 
-### Production Pipeline (`run_pipeline.sh`)
+### Production Pipeline (`scripts/run_pipeline.sh`)
 **Purpose**: Collect current data, process it, and generate predictions
 - **Frequency**: Runs for each bidding window (multiple times per term)
 - **Input**: Live BOSS system data
@@ -195,7 +195,7 @@ Pre-trained Models + Structured Data → [3] Bid Prediction → Predictions
   3. Train three CatBoost models with hyperparameter tuning
   4. Generate validation metrics
   5. Calculate safety factors via t-distribution fitting
-  6. Save production models to `script_output/models/`
+  6. Save production models to `models/`
 - **Duration**: ~1-2 hours depending on data size and hyperparameters
 
 ### Critical Distinction
@@ -260,7 +260,7 @@ BidlySMU implements a sophisticated three-phase data pipeline for SMU course bid
 - **Impact**: Would improve deployment flexibility
 
 #### 2. **Configuration Management**
-- **Current State**: Mixed approach (config.py + environment variables)
+- **Current State**: Mixed approach (src/config.py + environment variables)
 - **Recommendation**: Unified configuration system with validation
 - **Impact**: Better configuration error handling
 
@@ -441,7 +441,7 @@ BidlySMU implements a sophisticated three-phase data pipeline for SMU course bid
 - Performance metrics collection
 
 ### Model Management
-- Pre-trained models stored as `.cbm` files in `script_output/models/`
+- Pre-trained models stored as `.cbm` files in `models/`
 - Three production models:
   - `classification/production_classification_model.cbm`
   - `regression_median/production_regression_median_model.cbm`
@@ -471,18 +471,18 @@ BidlySMU implements a sophisticated three-phase data pipeline for SMU course bid
 ### Pipeline Execution
 ```bash
 # Run complete pipeline
-./run_pipeline.sh
+./scripts/run_pipeline.sh
 
 # Individual component execution
-python step_1a_BOSSClassScraper.py
-python step_1b_HTMLDataExtractor.py
-python step_1c_ScrapeOverallResults.py
-python step_2_TableBuilder.py
-python step_3_BidPrediction.py
+python src/scraper/step_1a_BOSSClassScraper.py
+python src/scraper/step_1b_HTMLDataExtractor.py
+python src/scraper/step_1c_ScrapeOverallResults.py
+python src/pipeline/step_2_TableBuilder.py
+python src/pipeline/step_3_BidPrediction.py
 ```
 
 ### Configuration
-1. Update `config.py` for target academic terms
+1. Update `src/config.py` for target academic terms
 2. Set database credentials in environment variables
 3. Configure bidding schedules as needed
 4. Adjust scraping parameters for performance
@@ -490,9 +490,9 @@ python step_3_BidPrediction.py
 ### Model Usage
 ```python
 # Load pre-trained models
-classification_model = CatBoostClassifier().load_model('production_classification_model.cbm')
-median_model = CatBoostRegressor().load_model('production_regression_median_model.cbm')
-min_model = CatBoostRegressor().load_model('production_regression_min_model.cbm')
+classification_model = CatBoostClassifier().load_model('models/production_classification_model.cbm')
+median_model = CatBoostRegressor().load_model('models/production_regression_median_model.cbm')
+min_model = CatBoostRegressor().load_model('models/production_regression_min_model.cbm')
 ```
 
 ## Recommendations Priority

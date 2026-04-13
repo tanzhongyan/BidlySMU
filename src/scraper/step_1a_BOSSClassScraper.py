@@ -1,8 +1,8 @@
 # Import global configuration settings
-from config import *
+from src.config import *
 
 # Import shared utilities
-from util import (
+from src.utils.util import (
     setup_driver,
     wait_for_manual_login,
     perform_automated_login,
@@ -51,7 +51,7 @@ class BOSSClassScraper:
         """
         return get_bidding_round_info_for_term(ay_term, now, self.bidding_schedule)
 
-    def scrape_and_save_html(self, start_ay_term=START_AY_TERM, end_ay_term=END_ArY_TERM, base_dir='script_input/classTimingsFull'):
+    def scrape_and_save_html(self, start_ay_term=START_AY_TERM, end_ay_term=END_AY_TERM, base_dir='script_input/classTimingsFull'):
         """
         Scrapes class details, always performing a full scan from 1000-5000.
         """

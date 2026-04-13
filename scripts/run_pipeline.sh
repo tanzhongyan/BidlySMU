@@ -38,16 +38,16 @@ echo " Kicking off Step 1 in parallel..."
 # The output of both is combined into a single log file.
 (
     echo "[Stream A] Running step_1a_BOSSClassScraper.py..."
-    python step_1a_BOSSClassScraper.py && \
+    python src/scraper/step_1a_BOSSClassScraper.py && \
     echo "[Stream A] Running step_1b_HTMLDataExtractor.py..." && \
-    python step_1b_HTMLDataExtractor.py
+    python src/scraper/step_1b_HTMLDataExtractor.py
 ) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
 PID_A=$! # Get the Process ID for Stream A
 
 # Stream B: Run 1c independently.
 (
     echo "[Stream B] Running step_1c_ScrapeOverallResults.py..."
-    python step_1c_ScrapeOverallResults.py
+    python src/scraper/step_1c_ScrapeOverallResults.py
 ) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
 PID_B=$! # Get the Process ID for Stream B
 
@@ -74,7 +74,7 @@ echo "------------------------------------------------------------"
 
 # --- Step 2: Table Building ---
 echo " Kicking off Step 2: TableBuilder..."
-python step_2_TableBuilder.py > logs/step_2_TableBuilder_${TIMESTAMP}.log 2>&1
+python src/pipeline/step_2_TableBuilder.py > logs/step_2_TableBuilder_${TIMESTAMP}.log 2>&1
 
 if [ $? -ne 0 ]; then
     echo "❌ ERROR: step_2_TableBuilder.py failed. Halting pipeline."
@@ -88,7 +88,7 @@ echo "------------------------------------------------------------"
 
 # --- Step 3: Bid Prediction ---
 echo " Kicking off Step 3: BidPrediction..."
-python step_3_BidPrediction.py > logs/step_3_BidPrediction_${TIMESTAMP}.log 2>&1
+python src/pipeline/step_3_BidPrediction.py > logs/step_3_BidPrediction_${TIMESTAMP}.log 2>&1
 
 if [ $? -ne 0 ]; then
     echo "❌ ERROR: step_3_BidPrediction.py failed. Halting pipeline."

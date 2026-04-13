@@ -6,7 +6,7 @@ including WebDriver setup and manual login handling.
 """
 
 # Import global configuration settings
-from config import *
+from src.config import *
 
 # Import dependencies
 import os

@@ -1,5 +1,5 @@
 # Import global configuration settings
-from config import *
+from src.config import *
 
 # Import dependencies
 import pandas as pd
@@ -1001,9 +1001,9 @@ if __name__ == "__main__":
     }
 
     model_paths = {
-        'classification': 'script_output/models/classification/production_classification_model.cbm',
-        'median': 'script_output/models/regression_median/production_regression_median_model.cbm',
-        'min': 'script_output/models/regression_min/production_regression_min_model.cbm'
+        'classification': 'models/production_classification_model.cbm',
+        'median': 'models/production_regression_median_model.cbm',
+        'min': 'models/production_regression_min_model.cbm'
     }
 
     for name, model in models.items():
@@ -1450,8 +1450,8 @@ if __name__ == "__main__":
         try:
             from scipy import stats
             
-            median_dir = Path('script_output/models/regression_median')
-            min_dir = Path('script_output/models/regression_min')
+            median_dir = Path('models/regression_median')
+            min_dir = Path('models/regression_min')
             
             median_results = pd.read_csv(median_dir / "regression_median_validation_results.csv")
             min_results = pd.read_csv(min_dir / "regression_min_validation_results.csv")

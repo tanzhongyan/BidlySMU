@@ -11,7 +11,7 @@ flowchart TD
         subgraph StreamA["Stream A: Class Details Pipeline"]
             A1[BOSS Website<br/>SMU Bidding System] -->|Selenium Automation| A2_Start
             
-            subgraph A2_Sub["step_1a_BOSSClassScraper.py"]
+            subgraph A2_Sub["src/scraper/step_1a_BOSSClassScraper.py"]
                 A2_Start[Start Scraper]
                 A2_1[Initialize ChromeDriver] --> A2_2
                 A2_2[Manual Login Wait<br/>Microsoft Authenticator] --> A2_3
@@ -25,7 +25,7 @@ flowchart TD
             
             A2_End -->|HTML Files| A3_Start
             
-            subgraph A3_Sub["step_1b_HTMLDataExtractor.py"]
+            subgraph A3_Sub["src/scraper/step_1b_HTMLDataExtractor.py"]
                 A3_Start[Start Extractor]
                 A3_1[Load HTML Files] --> A3_2
                 A3_2[Selenium DOM Parsing] --> A3_3
@@ -43,7 +43,7 @@ flowchart TD
         subgraph StreamB["Stream B: Historical Results"]
             B1[BOSS Historical Results] -->|Selenium| B2_Start
             
-            subgraph B2_Sub["step_1c_ScrapeOverallResults.py"]
+            subgraph B2_Sub["src/scraper/step_1c_ScrapeOverallResults.py"]
                 B2_Start[Start Scraper]
                 B2_1[Academic Year Iteration] --> B2_2
                 B2_2[Term-wise Scraping] --> B2_3
@@ -67,7 +67,7 @@ flowchart TD
         
         C1 --> D1_Start
         
-        subgraph D1_Sub["step_2_TableBuilder.py"]
+        subgraph D1_Sub["src/pipeline/step_2_TableBuilder.py"]
             D1_Start[Start Table Builder]
             D1_1[Load Excel Data] --> D1_2
             D1_2[Database Connection<br/>PostgreSQL] --> D1_3
@@ -105,7 +105,7 @@ flowchart TD
         
         D2 --> E1_Start
         
-        subgraph E1_Sub["step_3_BidPrediction.py"]
+        subgraph E1_Sub["src/pipeline/step_3_BidPrediction.py"]
             E1_Start[Start Prediction]
             E1_1[Load Database Data] --> E1_2_Start
             

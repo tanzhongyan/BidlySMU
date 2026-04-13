@@ -101,7 +101,56 @@
 
 ---
 
-## **5. V4 Model Architecture**
+## **5. Project Structure**
+
+```
+BidlySMU/
+├── src/                      # Python pipeline source code
+│   ├── __init__.py
+│   ├── config.py             # Configuration settings
+│   ├── scraper/              # Step 1: Data collection
+│   │   ├── __init__.py
+│   │   ├── step_1a_BOSSClassScraper.py
+│   │   ├── step_1b_HTMLDataExtractor.py
+│   │   └── step_1c_ScrapeOverallResults.py
+│   ├── pipeline/             # Step 2-3: Processing & prediction
+│   │   ├── __init__.py
+│   │   ├── step_2_TableBuilder.py
+│   │   └── step_3_BidPrediction.py
+│   └── utils/                # Shared utilities
+├── scripts/                  # Executable scripts
+│   └── run_pipeline.sh        # Pipeline orchestrator
+├── data/                     # Reference data
+│   ├── professor_lookup.csv   # Professor name mappings
+│   └── safety_factor_table.csv # Safety factor multipliers
+├── models/                   # Trained CatBoost models (.cbm)
+├── notebooks/                # Jupyter notebooks
+├── assets/                   # Images and static assets
+├── docs/                     # Documentation
+├── script_input/             # Input data (raw data, BOSS results)
+├── script_output/            # Output data (predictions, logs)
+├── db_cache/                 # Database cache
+├── deprecated/               # Deprecated versions
+├── logs/                     # Pipeline logs
+├── requirements.txt
+└── README.md
+```
+
+### **Key Files**
+| File | Description |
+|------|-------------|
+| `scripts/run_pipeline.sh` | Orchestrates the full pipeline |
+| `src/config.py` | Central configuration |
+| `src/scraper/step_1a*.py` | Scrapes class information from BOSS |
+| `src/scraper/step_1c*.py` | Scrapes overall bidding results |
+| `src/pipeline/step_2*.py` | Builds the training table |
+| `src/pipeline/step_3*.py` | Generates bid predictions |
+| `data/professor_lookup.csv` | Maps BOSS names to display names |
+| `data/safety_factor_table.csv` | Percentile-based safety multipliers |
+
+---
+
+## **6. V4 Model Architecture**
 
 ### **Three-Model System**
 | **Model Type** | **Purpose** | **Output** | **Uncertainty Measure** |
@@ -147,7 +196,7 @@ The scraper now supports fully automated login with TOTP-based MFA, enabling dep
 ### **Usage**
 
 ```python
-from step_1c_ScrapeOverallResults import ScrapeOverallResults
+from src.scraper.step_1c_ScrapeOverallResults import ScrapeOverallResults
 
 # Automated login
 scraper = ScrapeOverallResults()
@@ -160,7 +209,7 @@ success = scraper.run(
 Or for the class scraper:
 
 ```python
-from step_1a_BOSSClassScraper import BOSSClassScraper
+from src.scraper.step_1a_BOSSClassScraper import BOSSClassScraper
 
 scraper = BOSSClassScraper()
 success = scraper.run_full_scraping_process(
@@ -198,7 +247,7 @@ The pipeline uses **Google Gemini 2.5 Flash** (free tier) to normalize professor
 
 ### **How It Works**
 
-- The `step_2_TableBuilder.py` script uses Gemini LLM to identify surnames from various name formats
+- The `src/pipeline/step_2_TableBuilder.py` script uses Gemini LLM to identify surnames from various name formats
 - Example: `"Dr. John Smith Jr."` → `"Smith"`
 - Processes names in batches of 50 for efficiency
 - Falls back to rule-based normalization if LLM is unavailable
