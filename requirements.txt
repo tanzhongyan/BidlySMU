@@ -16,3 +16,6 @@ thefuzz
 google-genai
 SQLAlchemy
 pyotp
+sentry-sdk
+pytest
+pytest-mock

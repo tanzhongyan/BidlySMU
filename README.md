@@ -105,48 +105,68 @@
 
 ```
 BidlySMU/
-├── src/                      # Python pipeline source code
-│   ├── __init__.py
-│   ├── config.py             # Configuration settings
-│   ├── scraper/              # Step 1: Data collection
-│   │   ├── __init__.py
-│   │   ├── step_1a_BOSSClassScraper.py
-│   │   ├── step_1b_HTMLDataExtractor.py
-│   │   └── step_1c_ScrapeOverallResults.py
-│   ├── pipeline/             # Step 2-3: Processing & prediction
-│   │   ├── __init__.py
+├── src/                          # Python pipeline source code
+│   ├── config.py                 # Central configuration
+│   ├── base/                     # Base classes
+│   │   └── base_scraper.py       # Abstract BaseScraper with Smart Wait
+│   ├── driver/                   # WebDriver management
+│   │   ├── driver_factory.py     # ChromeDriverFactory
+│   │   └── authenticator.py     # Authenticator interface + ManualLogin/AutomatedLogin
+│   ├── scraper/                  # Data collection (Step 1)
+│   │   ├── class_scraper.py      # Class information scraper
+│   │   ├── html_data_extractor.py # HTML data extractor
+│   │   ├── overall_results_scraper.py # Overall results scraper
+│   │   ├── coordinator.py        # ScraperCoordinator (wires all components)
+│   │   └── deprecated/V4/        # Deprecated scraper implementations
+│   ├── pipeline/                 # Processing & prediction (Step 2-3)
 │   │   ├── step_2_TableBuilder.py
 │   │   └── step_3_BidPrediction.py
-│   └── utils/                # Shared utilities
-├── scripts/                  # Executable scripts
-│   └── run_pipeline.sh        # Pipeline orchestrator
-├── data/                     # Reference data
-│   ├── professor_lookup.csv   # Professor name mappings
-│   └── safety_factor_table.csv # Safety factor multipliers
-├── models/                   # Trained CatBoost models (.cbm)
-├── notebooks/                # Jupyter notebooks
-├── assets/                   # Images and static assets
-├── docs/                     # Documentation
-├── script_input/             # Input data (raw data, BOSS results)
-├── script_output/            # Output data (predictions, logs)
-├── db_cache/                 # Database cache
-├── deprecated/               # Deprecated versions
-├── logs/                     # Pipeline logs
+│   ├── logging/                  # Logging utilities
+│   │   └── logger.py             # LoggerFactory with Sentry integration
+│   ├── models/dto/               # Data Transfer Objects
+│   │   └── scraping_result.py    # ScrapingResult, ScraperError, ErrorType
+│   ├── parser/                   # Data parsing utilities
+│   │   ├── excel_writer.py
+│   │   └── encoding_handler.py
+│   └── utils/                    # Shared utilities
+│       ├── term_resolver.py      # Term code mapping utilities
+│       └── schedule_resolver.py  # Bidding round schedule utilities
+├── scripts/
+│   └── run_pipeline.sh           # Pipeline orchestrator
+├── tests/                        # Unit tests
+│   ├── conftest.py               # Shared pytest fixtures
+│   └── unit/                     # Unit tests (116 tests)
+├── data/                         # Reference data
+│   ├── professor_lookup.csv
+│   └── safety_factor_table.csv
+├── models/                       # Trained CatBoost models (.cbm)
+├── notebooks/                    # Jupyter notebooks
+├── assets/                       # Images and static assets
+├── docs/                         # Documentation
+├── script_input/                 # Input data (raw data, BOSS results)
+├── script_output/                # Output data (predictions, logs)
+├── deprecated/V4/                 # Old V4 scraper files (deprecated)
+├── db_cache/                     # Database cache
+├── logs/                         # Pipeline logs
 ├── requirements.txt
 └── README.md
 ```
 
-### **Key Files**
+### **Key Files (OOP Refactored)**
 | File | Description |
 |------|-------------|
 | `scripts/run_pipeline.sh` | Orchestrates the full pipeline |
-| `src/config.py` | Central configuration |
-| `src/scraper/step_1a*.py` | Scrapes class information from BOSS |
-| `src/scraper/step_1c*.py` | Scrapes overall bidding results |
-| `src/pipeline/step_2*.py` | Builds the training table |
-| `src/pipeline/step_3*.py` | Generates bid predictions |
-| `data/professor_lookup.csv` | Maps BOSS names to display names |
-| `data/safety_factor_table.csv` | Percentile-based safety multipliers |
+| `src/config.py` | Central configuration (terms, rounds, schedules) |
+| `src/scraper/coordinator.py` | Wires DriverFactory + Authenticator + Scraper |
+| `src/scraper/class_scraper.py` | Scrapes class information from BOSS |
+| `src/scraper/html_data_extractor.py` | Extracts data from saved HTML files |
+| `src/scraper/overall_results_scraper.py` | Scrapes overall bidding results |
+| `src/base/base_scraper.py` | Abstract base with Smart Wait wrapper |
+| `src/driver/driver_factory.py` | ChromeDriver factory with headless support |
+| `src/driver/authenticator.py` | ManualLogin or AutomatedLogin (TOTP MFA) |
+| `src/logging/logger.py` | LoggerFactory with Sentry integration |
+| `src/models/dto/scraping_result.py` | ScrapingResult, ScraperError DTOs |
+| `tests/unit/` | 116 unit tests with pytest |
 
 ---
 

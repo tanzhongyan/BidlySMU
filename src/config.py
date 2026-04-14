@@ -2,10 +2,10 @@ from datetime import datetime
 
 # Define the academic term range you want to scrape or process.
 # For a single term, set both START and END to the same value.
-# Updated defaults to target AY2025/26 Term 2 (change back if you want T1)
-START_AY_TERM = '2025-26_T2'
-END_AY_TERM = '2025-26_T2'
-ACAD_TERM_ID = 'AY202526T2'
+# Updated defaults to target AY2025/26 Term 3A
+START_AY_TERM = '2025-26_T3A'
+END_AY_TERM = '2025-26_T3A'
+ACAD_TERM_ID = 'AY202526T3A'
 
 # Define the specific bidding round and window you want to target.
 # Set to None to let the script auto-detect the current phase based on the schedule.
@@ -56,5 +56,30 @@ BIDDING_SCHEDULES = {
         (datetime(2026, 1, 21, 14, 0), "Round 2A Window 1", "R2AW1"),
         (datetime(2026, 1, 23, 14, 0), "Round 2A Window 2", "R2AW2"),
         (datetime(2026, 1, 26, 14, 0), "Round 2A Window 3", "R2AW3"),
+    ],
+    '2025-26_T3A': [
+        (datetime(2026, 3, 30, 14, 0), "Round 1 Window 1", "R1W1"),
+        (datetime(2026, 3, 31, 14, 0), "Round 1 Window 2", "R1W2"),
+        (datetime(2026, 4, 1, 14, 0), "Round 1 Window 3", "R1W3"),
+        (datetime(2026, 4, 2, 14, 0), "Round 1 Window 4", "R1W4"),
+        (datetime(2026, 5, 5, 14, 0), "Round 2 Window 1", "R2W1"),
+        (datetime(2026, 5, 6, 14, 0), "Round 2 Window 2", "R2W2"),
+    ],
+    '2025-26_T3B': [
+        (datetime(2026, 3, 30, 14, 0), "Round 1 Window 1", "R1W1"),
+        (datetime(2026, 3, 31, 14, 0), "Round 1 Window 2", "R1W2"),
+        (datetime(2026, 4, 1, 14, 0), "Round 1 Window 3", "R1W3"),
+        (datetime(2026, 4, 2, 14, 0), "Round 1 Window 4", "R1W4"),
+        (datetime(2026, 5, 5, 14, 0), "Round 2 Window 1", "R2W1"),
+        (datetime(2026, 5, 6, 14, 0), "Round 2 Window 2", "R2W2"),
+        (datetime(2026, 6, 23, 14, 0), "Round 2 Window 3", "R2W3"),
+        (datetime(2026, 6, 24, 14, 0), "Round 2 Window 4", "R2W4"),
+    ],
+    '2026-27_T1': [
+        (datetime(2026, 7, 8, 14, 0), "Round 1 Window 1", "R1W1"),
+        (datetime(2026, 7, 10, 14, 0), "Round 1A Window 1", "R1AW1"),
+        (datetime(2026, 7, 13, 14, 0), "Round 1A Window 2", "R1AW2"),
+        (datetime(2026, 7, 17, 14, 0), "Round 1B Window 1", "R1BW1"),
+        (datetime(2026, 7, 20, 14, 0), "Round 1B Window 2", "R1BW2"),
     ]
 }

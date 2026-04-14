@@ -5,7 +5,7 @@ export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
 # ==============================================================================
-# SMU Bidding Data Pipeline Orchestrator
+# SMU Bidding Data Pipeline Orchestrator (OOP Refactored)
 # ==============================================================================
 # This script runs the entire data scraping and prediction pipeline in the
 # correct order, with parallel processing for Step 1.
@@ -18,6 +18,11 @@ export PYTHONIOENCODING=utf-8
 #
 # All output is redirected to timestamped log files in the 'logs/' directory.
 # If any step fails, the script will exit immediately.
+#
+# OOP Refactoring:
+# - Step 1a: src/scraper/class_scraper.py (uses ScraperCoordinator)
+# - Step 1b: src/scraper/html_data_extractor.py
+# - Step 1c: src/scraper/overall_results_scraper.py (uses ScraperCoordinator)
 # ==============================================================================
 
 # --- Setup ---
@@ -37,17 +42,17 @@ echo " Kicking off Step 1 in parallel..."
 # Stream A: Run 1a, and if it succeeds, run 1b.
 # The output of both is combined into a single log file.
 (
-    echo "[Stream A] Running step_1a_BOSSClassScraper.py..."
-    python src/scraper/step_1a_BOSSClassScraper.py && \
-    echo "[Stream A] Running step_1b_HTMLDataExtractor.py..." && \
-    python src/scraper/step_1b_HTMLDataExtractor.py
+    echo "[Stream A] Running class_scraper.py (1a)..."
+    python -m src.scraper.class_scraper && \
+    echo "[Stream A] Running html_data_extractor.py (1b)..." && \
+    python -m src.scraper.html_data_extractor
 ) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
 PID_A=$! # Get the Process ID for Stream A
 
 # Stream B: Run 1c independently.
 (
-    echo "[Stream B] Running step_1c_ScrapeOverallResults.py..."
-    python src/scraper/step_1c_ScrapeOverallResults.py
+    echo "[Stream B] Running overall_results_scraper.py (1c)..."
+    python -m src.scraper.overall_results_scraper
 ) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
 PID_B=$! # Get the Process ID for Stream B
 
