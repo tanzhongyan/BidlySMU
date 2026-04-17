@@ -2,8 +2,7 @@
 Unit tests for ClassScraper.
 """
 import pytest
-from unittest.mock import MagicMock, patch, Mock
-from pathlib import Path
+from unittest.mock import Mock
 
 from src.scraper.class_scraper import ClassScraper, ClassScraperConfig
 

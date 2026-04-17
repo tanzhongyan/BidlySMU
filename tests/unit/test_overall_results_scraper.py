@@ -2,7 +2,7 @@
 Unit tests for OverallResultsScraper.
 """
 import pytest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 from src.scraper.overall_results_scraper import OverallResultsScraper, OverallResultsConfig
 from src.models.dto.scraping_result import ScrapingResult

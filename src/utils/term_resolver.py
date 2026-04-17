@@ -3,6 +3,7 @@ Term resolution utilities for BOSS academic terms.
 
 Provides term code mapping and academic year range generation.
 """
+import re
 from typing import List
 
 # Term code mapping to BOSS term codes
@@ -66,6 +67,33 @@ def transform_term_format(short_term: str) -> str:
 
     except (ValueError, IndexError) as e:
         raise ValueError(f"Invalid term format: '{short_term}'. Expected format like '2025-26_T1'.")
+
+
+def convert_target_term_format(target_term: str) -> str:
+    """
+    Convert short AY term format to database acad_term_id format.
+
+    Example:
+    - '2025-26_T1' -> 'AY202526T1'
+    - '2025-26_T3A' -> 'AY202526T3A'
+
+    Args:
+        target_term: Input term value.
+
+    Returns:
+        Converted AY format if pattern is recognized, otherwise original value.
+    """
+    if not target_term:
+        return target_term
+
+    match = re.match(r'(\d{4})-(\d{2})_T([A-Za-z0-9]+)', str(target_term).strip())
+    if match:
+        start_year = match.group(1)
+        end_year_suffix = match.group(2)
+        term_code = match.group(3)
+        return f"AY{start_year}{end_year_suffix}T{term_code}"
+
+    return target_term
 
 
 def generate_academic_year_range(start_ay_term: str, end_ay_term: str) -> List[str]:

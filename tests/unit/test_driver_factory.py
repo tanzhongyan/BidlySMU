@@ -2,10 +2,8 @@
 Unit tests for ChromeDriverFactory.
 """
 import pytest
-from unittest.mock import MagicMock, patch, Mock
-from selenium.webdriver import Chrome
+from unittest.mock import MagicMock, patch
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 
 from src.driver.driver_factory import ChromeDriverFactory
 

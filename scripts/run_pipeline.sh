@@ -5,84 +5,93 @@ export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 
 # ==============================================================================
-# SMU Bidding Data Pipeline Orchestrator (OOP Refactored)
+# SMU Bidding Data Pipeline Orchestrator
 # ==============================================================================
-# This script runs the entire data scraping and prediction pipeline in the
-# correct order, with parallel processing for Step 1.
+# This script runs the data processing pipeline (Steps 2 & 3).
+# Step 1 (scraping) is commented out as it requires Chrome/chromedriver.
 #
 # Execution Flow:
-# 1. (1a -> 1b) runs in parallel with (1c).
-# 2. The script waits for all of Step 1 to complete.
-# 3. Step 2 runs sequentially.
-# 4. Step 3 runs sequentially.
+# 1. Step 1 (scraping): DISABLED - requires Chrome
+# 2. Step 2 runs: TableBuilderCoordinator (professors, courses, classes, timings, bid windows)
+# 3. Step 3 runs: BidPredictorCoordinator (predictions and database upserts)
 #
 # All output is redirected to timestamped log files in the 'logs/' directory.
 # If any step fails, the script will exit immediately.
 #
-# OOP Refactoring:
-# - Step 1a: src/scraper/class_scraper.py (uses ScraperCoordinator)
-# - Step 1b: src/scraper/html_data_extractor.py
-# - Step 1c: src/scraper/overall_results_scraper.py (uses ScraperCoordinator)
+# Coordinators:
+# - TableBuilderCoordinator in src/pipeline/table_builder.py
+# - BidPredictorCoordinator in src/pipeline/bid_predictor.py
+#
+# Note: Step 1 (scraping) requires Chrome/chromedriver and is disabled by default.
+# To enable, uncomment the Step 1 section below.
 # ==============================================================================
 
 # --- Setup ---
-# Create a logs directory if it doesn't exist
 mkdir -p logs
+mkdir -p script_output
 
-# Generate a single timestamp for this entire run
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 echo "============================================================"
 echo "🚀 Starting SMU Data Pipeline at $(date)"
 echo "============================================================"
 
-# --- Step 1: Parallel Scraping ---
-echo " Kicking off Step 1 in parallel..."
+# --- Step 1: Scraping (DISABLED - requires Chrome) ---
+# The following Step 1 requires Chrome/chromedriver which may not be available.
+# To enable, ensure Chrome is installed and uncomment the section below.
+#
+# Stream A: class_scraper.py (1a) -> html_data_extractor.py (1b)
+# Stream B: overall_results_scraper.py (1c)
+#
+# (
+#     echo "[Stream A] Running class_scraper.py (1a)..."
+#     python -m src.scraper.class_scraper && \
+#     echo "[Stream A] Running html_data_extractor.py (1b)..." && \
+#     python -m src.scraper.html_data_extractor
+# ) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
+# PID_A=$!
+#
+# (
+#     echo "[Stream B] Running overall_results_scraper.py (1c)..."
+#     python -m src.scraper.overall_results_scraper
+# ) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
+# PID_B=$!
+#
+# wait $PID_A
+# CODE_A=$?
+# wait $PID_B
+# CODE_B=$?
+#
+# if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
+#     echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
+#     exit 1
+# fi
+# echo "✅ Step 1 (scraping) completed."
 
-# Stream A: Run 1a, and if it succeeds, run 1b.
-# The output of both is combined into a single log file.
-(
-    echo "[Stream A] Running class_scraper.py (1a)..."
-    python -m src.scraper.class_scraper && \
-    echo "[Stream A] Running html_data_extractor.py (1b)..." && \
-    python -m src.scraper.html_data_extractor
-) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
-PID_A=$! # Get the Process ID for Stream A
-
-# Stream B: Run 1c independently.
-(
-    echo "[Stream B] Running overall_results_scraper.py (1c)..."
-    python -m src.scraper.overall_results_scraper
-) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
-PID_B=$! # Get the Process ID for Stream B
-
-# --- Wait for parallel jobs to finish and check for errors ---
-echo " > Waiting for Stream A (PID: $PID_A) and Stream B (PID: $PID_B) to complete..."
-
-wait $PID_A
-CODE_A=$? # Get the exit code of Stream A
-
-wait $PID_B
-CODE_B=$? # Get the exit code of Stream B
-
-if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
-    echo "❌ ERROR: A script in Step 1 failed. Halting pipeline."
-    echo "   - Stream A (1a -> 1b) exit code: $CODE_A"
-    echo "   - Stream B (1c) exit code: $CODE_B"
-    echo "   - Check the log files in the 'logs/' directory for details."
-    exit 1
-fi
-
-echo "✅ Step 1 completed successfully."
+echo "⚠️ Step 1 (scraping) is DISABLED - requires Chrome/chromedriver"
+echo "   Raw data must already exist in script_input/"
 echo "------------------------------------------------------------"
 
 
-# --- Step 2: Table Building ---
-echo " Kicking off Step 2: TableBuilder..."
-python src/pipeline/step_2_TableBuilder.py > logs/step_2_TableBuilder_${TIMESTAMP}.log 2>&1
+# --- Step 2: Table Building (Direct Coordinator Call) ---
+echo " Kicking off Step 2: TableBuilderCoordinator..."
+python -c "
+import sys
+from src.config import BIDDING_SCHEDULES, START_AY_TERM
+from src.pipeline.table_builder import TableBuilderCoordinator, TableBuilderConfig
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+config = TableBuilderConfig.from_env(
+    bidding_schedules=BIDDING_SCHEDULES,
+    start_ay_term=START_AY_TERM
+)
+coordinator = TableBuilderCoordinator(config=config, logger=logger)
+coordinator.run()
+" > logs/step_2_TableBuilder_${TIMESTAMP}.log 2>&1
 
 if [ $? -ne 0 ]; then
-    echo "❌ ERROR: step_2_TableBuilder.py failed. Halting pipeline."
+    echo "❌ ERROR: TableBuilderCoordinator failed. Halting pipeline."
     echo "   - Check logs/step_2_TableBuilder_${TIMESTAMP}.log for details."
     exit 1
 fi
@@ -91,12 +100,25 @@ echo "✅ Step 2 completed successfully."
 echo "------------------------------------------------------------"
 
 
-# --- Step 3: Bid Prediction ---
-echo " Kicking off Step 3: BidPrediction..."
-python src/pipeline/step_3_BidPrediction.py > logs/step_3_BidPrediction_${TIMESTAMP}.log 2>&1
+# --- Step 3: Bid Prediction (Direct Coordinator Call) ---
+echo " Kicking off Step 3: BidPredictorCoordinator..."
+python -c "
+import sys
+from src.config import BIDDING_SCHEDULES, START_AY_TERM
+from src.pipeline.bid_predictor import BidPredictorCoordinator, BidPredictorConfig
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+config = BidPredictorConfig.from_env(
+    bidding_schedules=BIDDING_SCHEDULES,
+    start_ay_term=START_AY_TERM
+)
+coordinator = BidPredictorCoordinator(config=config, logger=logger)
+coordinator.run()
+" > logs/step_3_BidPrediction_${TIMESTAMP}.log 2>&1
 
 if [ $? -ne 0 ]; then
-    echo "❌ ERROR: step_3_BidPrediction.py failed. Halting pipeline."
+    echo "❌ ERROR: BidPredictorCoordinator failed. Halting pipeline."
     echo "   - Check logs/step_3_BidPrediction_${TIMESTAMP}.log for details."
     exit 1
 fi

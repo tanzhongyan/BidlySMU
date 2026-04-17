@@ -645,36 +645,31 @@ class HTMLDataExtractor(BaseScraper):
         return folder_to_window.get(round_part, round_part)
 
     def _get_current_academic_term(self) -> Optional[str]:
-        """Determine the current academic term based on date."""
-        now = datetime.now()
-        month = now.month
+        """
+        Determine which academic term folder to process.
 
-        if month >= 7:
-            acad_year_start = now.year
-        else:
-            acad_year_start = now.year - 1
+        Currently hardcoded to use config.START_AY_TERM for consistency with
+        the scraper (class_scraper.py) which also uses config to determine target term.
 
-        acad_year_end_short = (acad_year_start + 1) % 100
+        TODO: Automate this logic based on BIDDING_SCHEDULES:
+        - When in an active bidding window for term X, process term X
+        - When between terms (prep phase), process the NEXT upcoming term
+        - This allows scraping/processing to happen before a term starts
 
-        t1_start = datetime(acad_year_start, 7, 1)
-        t2_start = datetime(acad_year_start + 1, 1, 1)
-        t3a_start = datetime(acad_year_start + 1, 5, 11)
-        t3b_start = datetime(acad_year_start + 1, 6, 29)
+        For now, hardcoding to config ensures scraper and extractor stay in sync.
+        """
+        # TODO: Replace with automated logic:
+        # from src.config import BIDDING_SCHEDULES
+        # now = datetime.now()
+        # for schedule_item in BIDDING_SCHEDULES:
+        #     results_date, window_name, folder_suffix = schedule_item
+        #     if now < results_date:
+        #         # Extract term from folder_suffix (e.g., "2510" -> "2025-26_T1")
+        #         return extract_term_from_suffix(folder_suffix)
+        # return START_AY_TERM  # Fallback to config
 
-        term_code = None
-        if now >= t3b_start:
-            term_code = 'T3B'
-        elif now >= t3a_start:
-            term_code = 'T3A'
-        elif now >= t2_start:
-            term_code = 'T2'
-        elif now >= t1_start:
-            term_code = 'T1'
-
-        if term_code:
-            return f"{acad_year_start}-{acad_year_end_short:02d}_{term_code}"
-
-        return None
+        from src.config import START_AY_TERM
+        return START_AY_TERM
 
     def _find_latest_round_folder(self, term_path: str) -> Optional[str]:
         """Find the latest round folder in the academic term directory."""

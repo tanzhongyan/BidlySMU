@@ -1,9 +1,7 @@
 """
 Unit tests for HTMLDataExtractor.
 """
-import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime
 
 from src.scraper.html_data_extractor import HTMLDataExtractor, ExtractionResult
 

@@ -2,11 +2,9 @@
 Unit tests for ScraperCoordinator.
 """
 import pytest
-from unittest.mock import MagicMock, Mock
-from datetime import datetime
+from unittest.mock import MagicMock
 
 from src.scraper.coordinator import ScraperCoordinator
-from src.driver.driver_factory import ChromeDriverFactory
 from src.models.dto.scraping_result import ScrapingResult
 
 

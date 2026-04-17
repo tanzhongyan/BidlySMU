@@ -2,16 +2,13 @@
 Unit tests for BaseScraper.
 """
 import pytest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
-    StaleElementReferenceException,
-    TimeoutException,
     NoSuchElementException,
 )
 
-from src.base.base_scraper import BaseScraper, StaleElementError
+from src.base.base_scraper import BaseScraper
 
 
 class DummyScraper(BaseScraper):

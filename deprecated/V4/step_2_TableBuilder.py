@@ -1388,7 +1388,7 @@ class TableBuilder:
                         needs_update = False
                         
                         fields_to_check = {
-                            'grading_basis': row.get('grading_basis'),
+                            'grading_basis': row.get('grading_basis') if not pd.isna(row.get('grading_basis')) else None,
                             'course_outline_url': row.get('course_outline_url'),
                             'boss_id': int(row.get('class_boss_id')) if pd.notna(row.get('class_boss_id')) else None,
                             'warn_inaccuracy': warn_inaccuracy
@@ -1474,6 +1474,11 @@ class TableBuilder:
                         
                         if not already_created:
                             class_id = str(uuid.uuid4())
+                            # Safely handle grading_basis - convert NaN to None for enum column
+                            grading_basis_val = row.get('grading_basis')
+                            if pd.isna(grading_basis_val):
+                                grading_basis_val = None
+
                             new_class = {
                                 'id': class_id,
                                 'section': section,
@@ -1482,10 +1487,9 @@ class TableBuilder:
                                 'acad_term_id': acad_term_id,
                                 'created_at': datetime.now().isoformat(),
                                 'updated_at': datetime.now().isoformat(),
-                                'grading_basis': row.get('grading_basis'),
+                                'grading_basis': grading_basis_val,
                                 'course_outline_url': row.get('course_outline_url'),
                                 'boss_id': int(row.get('class_boss_id')) if pd.notna(row.get('class_boss_id')) else None,
-                                'raw_professor_name': prof_name,
                                 'warn_inaccuracy': warn_inaccuracy
                             }
                             

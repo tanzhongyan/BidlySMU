@@ -1,7 +1,6 @@
 """
 Unit tests for ScrapingResult DTOs.
 """
-import pytest
 from datetime import datetime
 
 from src.models.dto.scraping_result import ScrapingResult, ScraperError, ErrorType

@@ -3,7 +3,7 @@ Unit tests for LoggerFactory and get_logger.
 """
 import pytest
 import logging
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.logging.logger import (
     LoggerFactory,

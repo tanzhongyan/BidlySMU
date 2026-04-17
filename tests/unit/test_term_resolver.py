@@ -7,6 +7,7 @@ from src.utils.term_resolver import (
     get_term_code_map,
     get_all_terms,
     transform_term_format,
+    convert_target_term_format,
     generate_academic_year_range,
     TERM_CODE_MAP,
     ALL_TERMS,
@@ -113,3 +114,19 @@ class TestGenerateAcademicYearRange:
         """generate_academic_year_range should raise ValueError on invalid end."""
         with pytest.raises(ValueError):
             generate_academic_year_range('2025-26_T1', 'invalid')
+
+
+class TestConvertTargetTermFormat:
+    """Tests for convert_target_term_format()."""
+
+    def test_converts_term_1(self):
+        assert convert_target_term_format('2025-26_T1') == 'AY202526T1'
+
+    def test_converts_term_3a(self):
+        assert convert_target_term_format('2025-26_T3A') == 'AY202526T3A'
+
+    def test_keeps_unrecognized_format(self):
+        assert convert_target_term_format('AY202526T1') == 'AY202526T1'
+
+    def test_keeps_empty_value(self):
+        assert convert_target_term_format('') == ''
