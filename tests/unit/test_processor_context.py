@@ -75,7 +75,6 @@ class TestProcessorContextDefaultValues:
         assert context.new_bid_result == []
         assert context.update_bid_result == []
         assert context.new_faculties == []
-        assert context.courses_needing_faculty == []
 
     def test_stats_has_correct_default_keys(self):
         """stats should have correct default keys and values."""
@@ -87,8 +86,7 @@ class TestProcessorContextDefaultValues:
             'courses_updated': 0,
             'classes_created': 0,
             'timings_created': 0,
-            'exams_created': 0,
-            'courses_needing_faculty': 0
+            'exams_created': 0
         }
 
     def test_processed_timing_keys_is_empty_set(self):

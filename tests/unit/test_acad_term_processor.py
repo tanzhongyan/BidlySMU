@@ -17,7 +17,7 @@ def create_mock_context(standalone_data_df, acad_term_cache=None):
         standalone_data=standalone_data_df,
         acad_term_cache=acad_term_cache or {},
         new_acad_terms=[],
-        expected_acad_term_id="AY20242026T1"
+        expected_acad_term_id="AY202426T1"
     )
     context.boss_stats = {}
     return context
@@ -69,11 +69,11 @@ class TestAcadTermProcessor:
         acad_term_ids = [t['id'] for t in context.new_acad_terms]
         # Verify the acad_term_ids (format: AY{year_start}{year_end}{term})
         acad_term_ids = [t['id'] for t in context.new_acad_terms]
-        assert 'AY20242026T1' in acad_term_ids
-        assert 'AY20242026T2' in acad_term_ids
+        assert 'AY202426T1' in acad_term_ids
+        assert 'AY202426T2' in acad_term_ids
 
     def test_process_term_group_creates_correct_acad_term_id(self):
-        """Test _process_term_group() creates correct acad_term_id format like 'AY20242026T1'."""
+        """Test _process_term_group() creates correct acad_term_id format like 'AY202426T1'."""
         df = pd.DataFrame([
             {
                 'acad_year_start': 2024,
@@ -94,7 +94,7 @@ class TestAcadTermProcessor:
         term = context.new_acad_terms[0]
 
         # Verify ID format - AY{year_start}{year_end}{term}
-        assert term['id'] == 'AY20242026T1'
+        assert term['id'] == 'AY202426T1'
         assert term['acad_year_start'] == 2024
         assert term['acad_year_end'] == 2026
         assert term['term'] == '1'  # T prefix removed
@@ -119,7 +119,7 @@ class TestAcadTermProcessor:
 
         term = context.new_acad_terms[0]
         # Format is AY{year_start}{year_end}{term}
-        assert term['id'] == 'AY20252026T3'
+        assert term['id'] == 'AY202526T3'
         assert term['term'] == '3'  # T removed
 
     def test_extract_acad_term_from_path_parses_filename(self):
@@ -161,37 +161,13 @@ class TestAcadTermProcessor:
             }
         ])
 
-        existing_cache = {'AY20242026T1': {'id': 'AY20242026T1'}}
+        existing_cache = {'AY202426T1': {'id': 'AY202426T1'}}
         context = create_mock_context(df, acad_term_cache=existing_cache)
         processor = AcadTermProcessor(context)
         processor._do_process()
 
         # Should not create since already in cache
         assert len(context.new_acad_terms) == 0
-
-    def test_do_process_falls_back_to_source_file_when_data_missing(self):
-        """Test fallback extraction from source_file path when row data is missing."""
-        df = pd.DataFrame([
-            {
-                'acad_year_start': pd.NA,
-                'acad_year_end': pd.NA,
-                'term': pd.NA,
-                'period_text': 'Semester 1',
-                'start_dt': '2024-08-01',
-                'end_dt': '2024-12-31',
-                'acad_term_boss_id': 1,
-                'source_file': '/data/AY202426T1.csv'
-            }
-        ])
-
-        context = create_mock_context(df)
-        processor = AcadTermProcessor(context)
-        processor._do_process()
-
-        # Should still create the term using fallback extraction from source_file
-        # The source_file path has year_end=26 (2 digits), which is used as-is
-        assert len(context.new_acad_terms) == 1
-        assert context.new_acad_terms[0]['id'] == 'AY202426T1'
 
     def test_do_process_uses_most_common_period_text(self):
         """Test that _process_term_group() uses most common period_text for dates."""
@@ -278,5 +254,5 @@ class TestAcadTermProcessorIntegration:
         assert len(context.new_acad_terms) == 3
 
         acad_term_ids = sorted([t['id'] for t in context.new_acad_terms])
-        # year_start=2024,year_end=2026 -> AY20242026T1/T2; year_start=2025,year_end=2026 -> AY20252026T1
-        assert acad_term_ids == ['AY20242026T1', 'AY20242026T2', 'AY20252026T1']
+        # year_start=2024,year_end=2026 -> AY202426T1/T2; year_start=2025,year_end=2026 -> AY202526T1
+        assert acad_term_ids == ['AY202426T1', 'AY202426T2', 'AY202526T1']

@@ -323,7 +323,8 @@ class BOSSProcessor(AbstractProcessor):
             return
 
         window_data = self.context.standalone_data[
-            self.context.standalone_data['bidding_window'] == window_name
+            (self.context.standalone_data['bidding_window'] == window_name) &
+            (self.context.standalone_data['acad_term_id'] == acad_term_id)
         ]
 
         if window_data.empty:
@@ -394,7 +395,8 @@ class BOSSProcessor(AbstractProcessor):
             return
 
         window_data = self.context.standalone_data[
-            self.context.standalone_data['bidding_window'] == window_name
+            (self.context.standalone_data['bidding_window'] == window_name) &
+            (self.context.standalone_data['acad_term_id'] == acad_term_id)
         ]
 
         if is_current_live:

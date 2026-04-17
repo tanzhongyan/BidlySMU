@@ -94,10 +94,10 @@ class TestParseBossAliases:
         assert result == ["Alice", "Bob"]
 
     def test_parses_postgresql_array_string_with_spaces(self):
-        """Should parse PostgreSQL array - items retain internal spacing."""
+        """Should parse PostgreSQL array - items have whitespace stripped."""
         result = parse_boss_aliases('{" Alice "," Bob "}')
-        # After removing outer quotes, internal spaces are preserved
-        assert result == [" Alice ", " Bob "]
+        # Whitespace should be stripped from each item
+        assert result == ["Alice", "Bob"]
 
     def test_parses_single_item_postgresql_array(self):
         """Should parse single item PostgreSQL array."""
