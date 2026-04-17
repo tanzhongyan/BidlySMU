@@ -580,7 +580,7 @@ class ProfessorProcessor(AbstractProcessor):
                 corrected_afterclass_name = row.get('name', '')  # This is the corrected name
                 boss_aliases = row.get('boss_aliases', '')  # This should be JSON string
                 professor_id = row.get('id', '')
-                
+
                 # Parse boss_aliases JSON string
                 try:
                     if isinstance(boss_aliases, str) and boss_aliases.strip():
@@ -604,9 +604,7 @@ class ProfessorProcessor(AbstractProcessor):
                     'photo_url': row.get('photo_url', 'https://smu.edu.sg'),
                     'profile_url': row.get('profile_url', 'https://smu.edu.sg'),
                     'belong_to_university': row.get('belong_to_university', 1),
-                    'boss_aliases': boss_aliases,  # Keep as JSON string
-                    'afterclass_name': corrected_afterclass_name,
-                    'original_scraped_name': original_name
+                    'boss_aliases': boss_aliases  # Keep as JSON string
                 }
                 
                 # Add to new_professors list

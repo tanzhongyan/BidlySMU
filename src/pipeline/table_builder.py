@@ -22,13 +22,14 @@ from src.pipeline.processors.boss_processor import BOSSProcessor
 
 # Import dependencieS
 import json
-import logging
 import pandas as pd
 from google import genai
 from psycopg2.extras import execute_values
 import traceback
 import math
 
+import numpy as np
+from datetime import datetime, timezone
 
 @dataclass(frozen=True)
 class TableBuilderConfig:
@@ -295,10 +296,13 @@ class TableBuilder:
                     if df.empty:
                         continue
                     self._logger.info(f"Inserting {len(df)} records into {table_name}...")
-                    cols = df.columns.tolist()
+
+                    # Exclude internal-only columns that shouldn't go to database
+                    exclude_cols = {'original_scraped_name'}
+                    cols = [c for c in df.columns.tolist() if c not in exclude_cols]
+                    # Filter DataFrame to only include columns being inserted
+                    df = df[cols]
                     # Convert numpy types to native Python to avoid psycopg2 issues
-                    import numpy as np
-                    from datetime import datetime, timezone
                     def clean_value(v):
                         if v is None:
                             return None
