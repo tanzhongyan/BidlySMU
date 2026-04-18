@@ -298,6 +298,18 @@ class DatabaseHelper:
                 faculties_cache[row['id']] = row.to_dict()
                 faculty_acronym_to_id[row['acronym'].upper()] = row['id']
 
+            # Load classes_cache and assign to existing_classes_cache for TBA class lookup
+            classes_df = pd.read_pickle(cache_files['classes'])
+            loaded_existing_classes_cache = []
+            for _, row in classes_df.iterrows():
+                loaded_existing_classes_cache.append(row.to_dict())
+
+            # Assign to both TableBuilder and context for compatibility
+            if is_table_builder:
+                obj.existing_classes_cache = loaded_existing_classes_cache
+            if hasattr(obj, 'context'):
+                obj.context.existing_classes_cache = loaded_existing_classes_cache
+
             bid_window_df = pd.read_pickle(cache_files['bid_window'])
             if not bid_window_df.empty:
                 bid_window_id_counter = bid_window_df['id'].max() + 1
@@ -521,9 +533,12 @@ class DatabaseHelper:
                                         course_dict['belong_to_faculty'] = None
                                     courses_cache[row['code']] = course_dict
                                     added_count += 1
-                                    # Also add to new_courses list for database insertion
+                                    # Also add to new_courses list for database insertion ONLY if not already present
                                     if new_courses_list is not None:
-                                        new_courses_list.append(course_dict)
+                                        # Check if course with same ID is already in new_courses_list
+                                        course_id = course_dict.get('id')
+                                        if not any(c.get('id') == course_id for c in new_courses_list):
+                                            new_courses_list.append(course_dict)
                             if added_count > 0:
                                 logger.info(f"✅ Added {added_count} new courses from {path}.")
                     except Exception as e:

@@ -352,7 +352,7 @@ class TestProcessInstructorNames:
         result = transformer._process_instructor_names('')
         assert result is None
 
-    def test_process_instructor_names_with_lookup(self, mocker, transformer):
+    def test_process_instructor_names_with_lookup(self, mocker):
         """Test processing with professor_lookup mapping."""
         # Create mock professor lookup CSV
         mock_lookup_df = pd.DataFrame({
@@ -362,6 +362,9 @@ class TestProcessInstructorNames:
 
         with patch.object(Path, 'exists', return_value=True):
             with patch('pandas.read_csv', return_value=mock_lookup_df):
+                # Create a new transformer instance inside the patch to ensure the lookup is loaded with the mock data
+                mock_logger = mocker.Mock()
+                transformer = SMUBiddingTransformer(logger=mock_logger)
                 result = transformer._process_instructor_names('JOHN DOE')
                 # With lookup, should return mapped name
                 assert result is not None

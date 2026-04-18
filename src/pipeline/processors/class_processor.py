@@ -35,7 +35,14 @@ class ClassProcessor(AbstractProcessor):
         """Execute class processing logic."""
         self._logger.info("Processing classes with robust CREATE vs. UPDATE logic...")
 
-        for idx, row in self.context.standalone_data.iterrows():
+        # Filter data to only the expected academic term
+        filtered_df = self.context.standalone_data
+        if self.context.expected_acad_term_id:
+            original_count = len(filtered_df)
+            filtered_df = filtered_df[filtered_df['acad_term_id'] == self.context.expected_acad_term_id]
+            self._logger.info(f"🔍 Filtered to {len(filtered_df)} records for term {self.context.expected_acad_term_id} (from {original_count} total records)")
+
+        for idx, row in filtered_df.iterrows():
             try:
                 self._process_row(row, idx)
             except Exception as e:
@@ -307,10 +314,74 @@ class ClassProcessor(AbstractProcessor):
         return found_professors
 
     def _lookup_professor_with_fallback(self, prof_name: str):
-        """Look up professor by name with fallback."""
-        if prof_name.upper() in self.context.professor_lookup:
-            return self.context.professor_lookup[prof_name.upper()].get('database_id')
-        return None
+        """
+        Look up professor by name using V4's 6-strategy fallback chain.
+        Returns professor_id or None if not found.
+        """
+        if not prof_name:
+            return None
+
+        import json as json_module
+        search_name = prof_name.strip().upper()
+
+        # Strategy 1 & 2: Direct exact match + variation-based lookup
+        for variant in self._get_name_variations(search_name):
+            if variant in self.context.professor_lookup:
+                return self.context.professor_lookup[variant].get('database_id')
+
+        # Strategy 3: Search boss_aliases in professors_cache
+        for boss_name_key, prof_data in self.context.professors_cache.items():
+            aliases = prof_data.get('boss_aliases', '[]')
+            if isinstance(aliases, str):
+                try:
+                    aliases = json_module.loads(aliases)
+                except (json_module.JSONDecodeError, TypeError):
+                    aliases = []
+            if search_name in aliases:
+                return prof_data.get('id')  # Use actual ID from prof_data, not the dict key
+
+        # Strategy 4: Partial word matching
+        search_words = set(search_name.split())
+        if search_words:
+            for boss_name_key, prof_data in self.context.professors_cache.items():
+                name_words = set(prof_data.get('name', '').upper().split())
+                if name_words.issuperset(search_words):
+                    return prof_data.get('id')
+
+        # Strategy 5: Check new_professors list (professors created this run)
+        for new_prof in self.context.new_professors:
+            if new_prof.get('name', '').upper() == search_name:
+                return new_prof.get('id')
+            boss_aliases = new_prof.get('boss_aliases', '[]')
+            if isinstance(boss_aliases, str):
+                try:
+                    boss_aliases = json_module.loads(boss_aliases)
+                except (json_module.JSONDecodeError, TypeError):
+                    boss_aliases = []
+            if search_name in boss_aliases:
+                return new_prof.get('id')
+
+        # Strategy 6: Fuzzy exact matching via professor_lookup
+        for lookup_key, lookup_data in self.context.professor_lookup.items():
+            if self._names_match_fuzzy_exact(search_name, lookup_key):
+                return lookup_data.get('database_id')
+
+        return None  # Not found
+
+    def _get_name_variations(self, name: str) -> list:
+        """Generate variations of a name for lookup."""
+        variations = [name]
+        # Strip commas
+        variations.append(name.replace(',', '').replace(',', ''))
+        # Normalize whitespace
+        variations.append(' '.join(name.split()))
+        return variations
+
+    def _names_match_fuzzy_exact(self, name1: str, name2: str) -> bool:
+        """Check if two names match exactly after normalization."""
+        n1 = name1.replace(',', '').replace('.', '').upper()
+        n2 = name2.replace(',', '').replace('.', '').upper()
+        return n1 == n2
 
     def _collect_results(self) -> None:
         pass

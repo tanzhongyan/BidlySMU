@@ -48,6 +48,7 @@ class MockContext:
         self.update_classes = []
         self.class_id_mapping = {}
         self.stats = {'classes_created': 0}
+        self.expected_acad_term_id = None
 
 
 def create_mock_context(standalone_data=None, multiple_data=None, multiple_lookup=None,
@@ -284,6 +285,39 @@ class TestClassProcessorHandleTbaConversion:
         assert len(ctx.update_classes) == 1
         assert ctx.update_classes[0]['id'] == 'tba-class-1'
         assert ctx.update_classes[0]['professor_id'] == 'P1'
+
+    def test_handle_tba_conversion_prevents_duplicate_creation(self):
+        """Test that TBA conversion prevents duplicate class creation via processed_class_keys."""
+        ctx = create_mock_context()
+        ctx.existing_classes_cache = [
+            {'id': 'tba-class-1', 'acad_term_id': 'T1', 'boss_id': 101, 'professor_id': None,
+             'course_id': 'course-1', 'section': '1'},
+        ]
+        ctx.courses_cache = {'CS101': {'id': 'course-1'}}
+        ctx.multiple_lookup = {'R1': [{'type': 'CLASS', 'professor_name': 'Prof A'}]}
+        ctx.professor_lookup = {'PROF A': {'database_id': 'P1'}}
+        ctx.standalone_data = pd.DataFrame([
+            {'record_key': 'R1', 'acad_term_id': 'T1', 'class_boss_id': 101,
+             'course_code': 'CS101', 'section': '1', 'grading_basis': None, 'course_outline_url': None}
+        ])
+
+        processor = ClassProcessor(ctx)
+        processor._load_cache()
+
+        # Verify TBA class is in the lookup
+        assert ("T1", 101, None) in processor._existing_class_lookup
+
+        # Run processing
+        processor._do_process()
+
+        # Should have exactly 1 update (TBA -> assigned), not a new class creation
+        assert len(ctx.update_classes) == 1
+        assert ctx.update_classes[0]['id'] == 'tba-class-1'
+        assert ctx.update_classes[0]['professor_id'] == 'P1'
+
+        # Should have 0 new classes (not a duplicate creation)
+        assert len(ctx.new_classes) == 0
+        assert ctx.stats['classes_created'] == 0
 
     def test_handle_tba_conversion_no_op_for_non_tba(self):
         """Test _handle_tba_conversion() does nothing when class is not TBA."""

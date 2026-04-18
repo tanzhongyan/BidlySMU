@@ -49,6 +49,15 @@ class SMUBiddingTransformer:
         # Lists to track feature types for CatBoost
         self.categorical_features = []
         self.numeric_features = []
+
+        # Load professor lookup once during initialization
+        self._professor_lookup = {}
+        lookup_path = Path(self._professor_lookup_path)
+        if lookup_path.exists():
+            lookup_df = pd.read_csv(lookup_path)
+            for _, row in lookup_df.iterrows():
+                if pd.notna(row.get('boss_name')) and pd.notna(row.get('afterclass_name')):
+                    self._professor_lookup[str(row['boss_name']).strip().upper()] = str(row['afterclass_name']).strip()
         
     def fit(self, df: pd.DataFrame) -> 'SMUBiddingTransformer':
         """
@@ -308,14 +317,8 @@ class SMUBiddingTransformer:
                 return None
             instructor_str = str(instructor_input).strip()
 
-        # Load professor lookup mapping
-        professor_lookup = {}
-        lookup_path = Path(self._professor_lookup_path)
-        if lookup_path.exists():
-            lookup_df = pd.read_csv(lookup_path)
-            for _, row in lookup_df.iterrows():
-                if pd.notna(row.get('boss_name')) and pd.notna(row.get('afterclass_name')):
-                    professor_lookup[str(row['boss_name']).strip().upper()] = str(row['afterclass_name']).strip()
+        # Use pre-loaded professor lookup
+        professor_lookup = self._professor_lookup
         
         # Step 1: Check if the entire string is already a known professor.
         # This handles names that include commas, like "LEE, MICHELLE PUI YEE".

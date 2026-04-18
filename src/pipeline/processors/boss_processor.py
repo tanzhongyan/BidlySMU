@@ -7,6 +7,11 @@ import pandas as pd
 from datetime import datetime
 from src.pipeline.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
+from src.pipeline.processors.acad_term_processor import AcadTermProcessor
+from src.pipeline.processors.professor_processor import ProfessorProcessor
+from src.pipeline.processors.course_processor import CourseProcessor
+from src.pipeline.processors.class_processor import ClassProcessor
+from src.pipeline.processors.timing_processor import TimingProcessor
 from src.utils.schedule_resolver import parse_window_name
 from src.utils.class_id_resolver import find_all_class_ids
 from src.utils.cache_resolver import safe_int, safe_float
@@ -220,18 +225,67 @@ class BOSSProcessor(AbstractProcessor):
         return None
 
     def _process_base_entities(self) -> None:
-        """Process base entities (Courses, Classes, Timings)."""
-        self._log_boss_activity("🔄 Processing base entities (Courses, Classes, Timings)...")
+        """Process base entities (AcadTerms, Professors, Courses, Classes, Timings)."""
+        self._log_boss_activity("🔄 Processing base entities (AcadTerms, Professors, Courses, Classes, Timings)...")
 
-        # These use the existing thin wrappers in TableBuilder
+        # Process in correct dependency order:
+        # 1. AcadTerms - no dependencies
+        # 2. Professors - no dependencies
+        # 3. Courses - depends on faculties (already in cache)
+        # 4. Classes - depends on courses, professors, acad_terms
+        # 5. Timings - depends on classes
+
+        # 1. Process Academic Terms
         self.context.logger.info("Processing acad_terms...")
-        self.context.logger.info("Processing professors...")
-        self.context.logger.info("Processing courses...")
-        self.context.logger.info("Processing classes...")
-        self.context.logger.info("Processing timings...")
+        try:
+            acad_term_processor = AcadTermProcessor(self.context)
+            acad_term_processor.process()
+            self.context.logger.info("✅ AcadTerm processing complete.")
+        except Exception as e:
+            self.context.logger.error(f"❌ Error in AcadTermProcessor: {e}")
+            raise
 
-        # Note: In the processor pattern, these would be separate processors
-        # but for now we delegate to the existing processor methods via context
+        # 2. Process Professors
+        self.context.logger.info("Processing professors...")
+        try:
+            professor_processor = ProfessorProcessor(self.context)
+            professor_processor.process()
+            self.context.logger.info("✅ Professor processing complete.")
+        except Exception as e:
+            self.context.logger.error(f"❌ Error in ProfessorProcessor: {e}")
+            raise
+
+        # 3. Process Courses
+        self.context.logger.info("Processing courses...")
+        try:
+            course_processor = CourseProcessor(self.context)
+            course_processor.process()
+            self.context.logger.info(f"✅ Course processing complete. New: {self.context.stats.get('courses_created', 0)}, Updated: {self.context.stats.get('courses_updated', 0)}")
+        except Exception as e:
+            self.context.logger.error(f"❌ Error in CourseProcessor: {e}")
+            raise
+
+        # 4. Process Classes
+        self.context.logger.info("Processing classes...")
+        try:
+            class_processor = ClassProcessor(self.context)
+            class_processor.process()
+            self.context.logger.info(f"✅ Class processing complete. New: {self.context.stats.get('classes_created', 0)}, Updated: {len(self.context.update_classes)}")
+        except Exception as e:
+            self.context.logger.error(f"❌ Error in ClassProcessor: {e}")
+            raise
+
+        # 5. Process Timings
+        self.context.logger.info("Processing timings...")
+        try:
+            timing_processor = TimingProcessor(self.context)
+            timing_processor.process()
+            self.context.logger.info("✅ Timing processing complete.")
+        except Exception as e:
+            self.context.logger.error(f"❌ Error in TimingProcessor: {e}")
+            raise
+
+        self._log_boss_activity("✅ Base entity processing complete.")
 
     def _process_all_bidding_windows(self) -> None:
         """Sequential catch-up processing for all bidding windows."""

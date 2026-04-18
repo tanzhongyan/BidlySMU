@@ -483,7 +483,17 @@ class ProfessorProcessor(AbstractProcessor):
             if boss_name in alias_list or afterclass_name == new_prof.get('name', ''):
                 # This professor was already created in this run, just return its ID.
                 return new_prof.get('id')
-        
+
+        # Check for slug collision with existing professors in DB cache
+        base_slug = re.sub(r'[^a-zA-Z0-9]+', '-', afterclass_name.lower()).strip('-')
+        for prof_id, prof_data in self.ctx.professors_cache.items():
+            existing_slug = prof_data.get('slug', '')
+            if not existing_slug:
+                existing_slug = re.sub(r'[^a-zA-Z0-9]+', '-', prof_data.get('name', '').lower()).strip('-')
+            if existing_slug == base_slug:
+                self.ctx.logger.warning(f"⚠️ Professor slug collision detected: {base_slug} (existing: {prof_data.get('name')}). Using existing ID.")
+                return prof_id
+
         # --- Unified Creation Logic ---
         professor_id = str(uuid.uuid4())
         slug = re.sub(r'[^a-zA-Z0-9]+', '-', afterclass_name.lower()).strip('-')

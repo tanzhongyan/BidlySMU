@@ -320,6 +320,12 @@ class TableBuilder:
                             return v
                         if isinstance(v, str) and v.strip() == '':
                             return None
+                        # Handle boss_aliases conversion from JSON string to Python list for Postgres array
+                        if isinstance(v, str) and (v.startswith('[') and v.endswith(']')):
+                            try:
+                                return json.loads(v)
+                            except:
+                                pass
                         return v
 
                     # Tables with created_at/updated_at timestamps
