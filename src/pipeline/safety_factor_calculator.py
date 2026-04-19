@@ -44,7 +44,12 @@ class SafetyFactorCalculator:
         try:
             median_dir = Path('models/regression_median')
             min_dir = Path('models/regression_min')
-            
+
+            # Check if validation results files exist
+            if not (median_dir / "regression_median_validation_results.csv").exists() or not (min_dir / "regression_min_validation_results.csv").exists():
+                self._logger.warning("Validation results files not found. Skipping safety factor table creation.")
+                return pd.DataFrame()
+
             median_results = pd.read_csv(median_dir / "regression_median_validation_results.csv")
             min_results = pd.read_csv(min_dir / "regression_min_validation_results.csv")
             

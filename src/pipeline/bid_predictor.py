@@ -143,13 +143,36 @@ class BidPredictorCoordinator:
             'min_uncertainty': 'minUncertainty'
         }, inplace=True)
         df_to_upsert['createdAt'] = datetime.now()
-        DatabaseHelper.upsert_df(
-            connection=self.db_connection,
-            df=df_to_upsert,
-            table_name='BidPrediction',
-            index_elements=['classId', 'bidWindowId'],
-            logger=self._logger,
-        )
+
+        # Filter out rows with non-integer bid_window_id (e.g. PENDING_*)
+        df_to_upsert = df_to_upsert[
+            df_to_upsert['bid_window_id'].apply(lambda x: isinstance(x, (int, float)) and not pd.isna(x))
+        ]
+        if df_to_upsert.empty:
+            self._logger.info("No valid bid predictions with integer bid_window_id to upload. Skipping.")
+            return
+
+        # Use psycopg2 directly instead of DatabaseHelper.upsert_df to avoid set_session error
+        from psycopg2.extras import execute_values
+
+        cols = df_to_upsert.columns.tolist()
+        index_elements = ['classId', 'bidWindowId']
+        update_cols = [col for col in cols if col not in index_elements]
+
+        sql_stub = f'''
+            INSERT INTO "bid_prediction" ({', '.join(f'"{c}"' for c in cols)})
+            VALUES %s
+            ON CONFLICT ({', '.join(f'"{c}"' for c in index_elements)})
+            DO UPDATE SET {', '.join([f'"{col}" = EXCLUDED."{col}"' for col in update_cols])};
+        '''
+
+        cursor = self.db_connection.cursor()
+        try:
+            values = [tuple(row) for row in df_to_upsert.to_numpy()]
+            execute_values(cursor, sql_stub, values, page_size=1000)
+            self._logger.info(f"Queued {len(df_to_upsert)} records for upsert into BidPrediction.")
+        finally:
+            cursor.close()
 
     def _map_classes_to_predictions(self, bidding_data):
         courses_df = pd.DataFrame(list(self.courses_cache.values()))
@@ -227,12 +250,33 @@ class BidPredictorCoordinator:
 
     def _get_bid_window_id_for_window(self, window_name, target_term):
         round_val, window_num = parse_window_name(window_name)
-        if not round_val or not window_num: return f"PENDING_{window_name.replace(' ', '_')}"
+        if not round_val or not window_num:
+            result = f"PENDING_{window_name.replace(' ', '_')}"
+            self._logger.warning(f"Could not parse window '{window_name}': returning {result}")
+            return result
         target_term_id = convert_target_term_format(target_term)
         cache_key = (target_term_id, str(round_val), int(window_num))
+
+        # Debug: Log cache key and show what's in cache
+        self._logger.info(f"🔍 Looking for bid_window with key={cache_key}")
+        self._logger.info(f"   Cache contents ({len(self.bid_window_cache)} entries): {list(self.bid_window_cache.keys())[:10]}")
+
         if cache_key in self.bid_window_cache:
-            return self.bid_window_cache[cache_key]
-        return f"PENDING_{target_term_id}_{round_val}_{window_num}"
+            bid_id = self.bid_window_cache[cache_key]
+            self._logger.info(f"✅ Found bid_window_id: {bid_id}")
+            return bid_id
+
+        # Fallback: try to find by just round+window regardless of term
+        fallback_key = (str(round_val), int(window_num))
+        self._logger.warning(f"❌ Key {cache_key} not found. Trying fallback key (round, window)={fallback_key}")
+        for cache_key_check, bid_id in self.bid_window_cache.items():
+            if cache_key_check[1:] == fallback_key:
+                self._logger.info(f"✅ Found via fallback: {bid_id} for {cache_key_check}")
+                return bid_id
+
+        result = f"PENDING_{target_term_id}_{round_val}_{window_num}"
+        self._logger.warning(f"❌ No bid_window found for {cache_key}, returning PENDING: {result}")
+        return result
 
     def _load_data(self):
         """
@@ -304,6 +348,9 @@ class BidPredictorCoordinator:
             self.db_connection = DatabaseHelper.create_connection(self._db_adapter, self._logger)
             if not self.db_connection:
                 raise Exception("Failed to connect to database")
+
+            # Set autocommit to False before any other database operations
+            self.db_connection.autocommit = False
 
             # Load data directly (don't use TableBuilder's load_or_cache_data_with_freshness_check)
             self._load_data()
@@ -548,13 +595,14 @@ class BidPredictorCoordinator:
                 safety_factor_df.to_csv(self.output_dir / f'safety_factor_table_{timestamp}.csv', index=False)
 
             try:
-                self.db_connection.autocommit = False
                 self._upsert_bid_predictions_to_db(bid_predictions_df)
                 self.db_connection.commit()
                 self._logger.info("Transaction committed successfully.")
             except Exception as e:
                 self.db_connection.rollback()
                 self._logger.error(f"Transaction rolled back due to error: {e}")
+                import traceback
+                traceback.print_exc()
                 sys.exit(1)
             finally:
                 self.db_connection.close()
