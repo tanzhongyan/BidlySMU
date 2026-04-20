@@ -6,11 +6,18 @@ import os
 import csv
 import pandas as pd
 import pickle
+from typing import Dict
 
 from src.logging.logger import get_logger
 from src.pipeline.processors.acad_term_processor import AcadTermProcessor
 from src.pipeline.processors.course_processor import CourseProcessor
+from src.pipeline.processors.professor_processor import ProfessorProcessor
 from src.pipeline.dtos.course_dto import CourseDTO
+from src.pipeline.dtos.professor_dto import ProfessorDTO
+
+# Sheet name constants
+SHEET_STANDALONE = 'standalone'
+SHEET_MULTIPLE = 'multiple'
 
 
 class PipelineCoordinator:
@@ -54,12 +61,12 @@ class PipelineCoordinator:
         input_file = self.config.input_file
         self._logger.info(f"📂 Loading raw data from {input_file}")
 
-        standalone_df = pd.read_excel(input_file, sheet_name='standalone')
-        multiple_df = pd.read_excel(input_file, sheet_name='multiple')
+        standalone_df = pd.read_excel(input_file, sheet_name=SHEET_STANDALONE)
+        multiple_df = pd.read_excel(input_file, sheet_name=SHEET_MULTIPLE)
 
         self.raw_data = {
-            'standalone': standalone_df,
-            'multiple': multiple_df
+            SHEET_STANDALONE: standalone_df,
+            SHEET_MULTIPLE: multiple_df
         }
         self._logger.info(f"✅ Loaded {len(standalone_df)} standalone and {len(multiple_df)} multiple records")
 
@@ -72,28 +79,40 @@ class PipelineCoordinator:
 
         # Process academic terms
         acad_term_processor = AcadTermProcessor(
-            raw_data=self.raw_data['standalone'],
-            acad_term_cache=self.db_cache.get('acad_term', {})
+            raw_data=self.raw_data[SHEET_STANDALONE],
+            acad_term_cache=self.db_cache.get('acad_term', {}),
+            logger=self._logger
         )
         acad_terms_new, acad_terms_updated = acad_term_processor.process()
         self.results['acad_terms'] = {'new': acad_terms_new, 'updated': acad_terms_updated}
+        self.results['acad_term_lookup'] = self._build_lookup('acad_terms', 'id')
         self._logger.info(f"✅ Processed {len(acad_terms_new)} academic terms")
 
         # Process courses
         course_processor = CourseProcessor(
-            raw_data=self.raw_data['standalone'],
+            raw_data=self.raw_data[SHEET_STANDALONE],
             courses_cache=self.db_cache.get('courses', {}),
-            faculties_cache=self.db_cache.get('faculties', {})
+            faculties_cache=self.db_cache.get('faculties', {}),
+            logger=self._logger
         )
         courses_new, courses_updated = course_processor.process()
         self.results['courses'] = {'new': courses_new, 'updated': courses_updated}
-
-        # Build lookups for fact tables (in-memory, no pickle!)
-        self.results['acad_term_lookup'] = self._build_lookup('acad_terms', 'id')
         self.results['course_lookup'] = self._build_lookup('courses', 'code')
-
         self._logger.info(f"✅ Processed courses: {len(courses_new)} new, {len(courses_updated)} updated")
-        self._logger.info(f"✅ Built course_lookup with {len(self.results['course_lookup'])} entries")
+
+        # Process professors
+        professor_processor = ProfessorProcessor(
+            raw_data=self.raw_data[SHEET_MULTIPLE],  # Professor names from multiple sheet
+            professors_cache=self.db_cache.get('professors', {}),
+            logger=self._logger
+        )
+        professors_new, professors_updated = professor_processor.process()
+        self.results['professors'] = {'new': professors_new, 'updated': professors_updated}
+
+        # Build professor lookup for fact tables
+        self.results['professor_lookup'] = self._build_lookup('professors', 'id')
+
+        self._logger.info(f"✅ Processed professors: {len(professors_new)} new, {len(professors_updated)} updated")
 
         self._logger.info("🚀 Pipeline completed")
         return self.results
@@ -119,41 +138,38 @@ class PipelineCoordinator:
             lookup[getattr(dto, key_field)] = dto
         return lookup
 
+    def _write_csv(self, filename: str, dtos: list, log_message: str):
+        """Helper method to write DTOs to CSV file."""
+        if not dtos:
+            return
+        output_file = os.path.join(self.config.output_base, filename)
+        headers = list(dtos[0].COLUMNS.values())
+        with open(output_file, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            for dto in dtos:
+                writer.writerow(dto.to_csv_row())
+        self._logger.info(log_message.format(filename=filename, count=len(dtos)))
+
     def save_csv(self):
         """Save results to CSV files."""
         # Save academic terms
         if 'acad_terms' in self.results and self.results['acad_terms']:
-            output_file = os.path.join(self.config.output_base, 'new_acad_terms.csv')
             terms = self.results['acad_terms']
-            if terms:
-                headers = list(terms[0].COLUMNS.values())
-                with open(output_file, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=headers)
-                    writer.writeheader()
-                    for term in terms:
-                        writer.writerow(term.to_csv_row())
-                self._logger.info(f"✅ Saved acad_terms to {output_file}")
+            self._write_csv('new_acad_terms.csv', terms, f"✅ Saved acad_terms to {{filename}}")
 
-        # Save new courses to script_output/ (NOT script_output/verify/)
+        # Save courses
         if 'courses' in self.results:
-            new_courses = self.results['courses']['new']
-            if new_courses:
-                output_file = os.path.join(self.config.output_base, 'new_courses.csv')
-                headers = list(new_courses[0].COLUMNS.values())
-                with open(output_file, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=headers)
-                    writer.writeheader()
-                    for dto in new_courses:
-                        writer.writerow(dto.to_csv_row())
-                self._logger.info(f"✅ Saved {len(new_courses)} new courses to {output_file}")
+            courses = self.results['courses']
+            self._write_csv('new_courses.csv', courses['new'],
+                            f"✅ Saved {{count}} new courses to {{filename}}")
+            self._write_csv('update_courses.csv', courses['updated'],
+                            f"✅ Saved {{count}} updated courses to {{filename}}")
 
-            updated_courses = self.results['courses']['updated']
-            if updated_courses:
-                output_file = os.path.join(self.config.output_base, 'update_courses.csv')
-                headers = list(updated_courses[0].COLUMNS.values())
-                with open(output_file, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=headers)
-                    writer.writeheader()
-                    for dto in updated_courses:
-                        writer.writerow(dto.to_csv_row())
-                self._logger.info(f"✅ Saved {len(updated_courses)} updated courses to {output_file}")
+        # Save professors
+        if 'professors' in self.results:
+            professors = self.results['professors']
+            self._write_csv('new_professors.csv', professors['new'],
+                            f"✅ Saved {{count}} new professors to {{filename}}")
+            self._write_csv('update_professors.csv', professors['updated'],
+                            f"✅ Saved {{count}} updated professors to {{filename}}")

@@ -4,9 +4,9 @@ Class-based processor that returns Tuple of (new, updated) AcadTermDTOs.
 """
 import pandas as pd
 from collections import defaultdict
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+import logging
 
-from src.logging.logger import get_logger
 from src.pipeline.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.acad_term_dto import AcadTermDTO
 
@@ -14,8 +14,15 @@ from src.pipeline.dtos.acad_term_dto import AcadTermDTO
 class AcadTermProcessor(AbstractProcessor):
     """Processes academic term records from standalone data."""
 
-    def __init__(self, raw_data: pd.DataFrame, acad_term_cache: Dict[str, Any]):
-        self._logger = get_logger(__name__)
+    TERM_PREFIX = 'T'
+
+    def __init__(
+        self,
+        raw_data: pd.DataFrame,
+        acad_term_cache: Dict[str, Any],
+        logger: Optional[logging.Logger] = None
+    ):
+        super().__init__(logger)
         self._raw_data = raw_data
         self._acad_term_cache = acad_term_cache
 
@@ -45,7 +52,7 @@ class AcadTermProcessor(AbstractProcessor):
 
             first_row = rows[0]
             term = first_row.get('term', '')
-            clean_term = str(term)[1:] if str(term).startswith('T') else str(term)
+            clean_term = str(term)[1:] if str(term).startswith(self.TERM_PREFIX) else str(term)
 
             dto = AcadTermDTO(
                 id=acad_term_id,

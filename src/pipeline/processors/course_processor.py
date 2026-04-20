@@ -5,11 +5,11 @@ Class-based processor that returns (new_courses, updated_courses) DTOs.
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
+import logging
 
 import pandas as pd
 
-from src.logging.logger import get_logger
 from src.pipeline.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.course_dto import CourseDTO
 
@@ -17,18 +17,22 @@ from src.pipeline.dtos.course_dto import CourseDTO
 class CourseProcessor(AbstractProcessor):
     """Processes course records from standalone data."""
 
+    DEFAULT_UNIVERSITY_ID = 1
+    DEFAULT_FALLBACK_FACULTY_ID = 1
+
     def __init__(
         self,
         raw_data: pd.DataFrame,
         courses_cache: Dict[str, Any],
-        faculties_cache: Dict[int, Any]
+        faculties_cache: Dict[int, Any],
+        logger: Optional[logging.Logger] = None
     ):
-        self._logger = get_logger(__name__)
+        super().__init__(logger)
         self._raw_data = raw_data
         self._courses_cache = courses_cache
         self._faculties_cache = faculties_cache
         self._prefix_faculty_index: Dict[str, int] = {}
-        self._fallback_faculty_id: int = 1
+        self._fallback_faculty_id: int = self.DEFAULT_FALLBACK_FACULTY_ID
 
     def process(self) -> Tuple[List[CourseDTO], List[CourseDTO]]:
         """Process courses and return (new_courses, updated_courses) DTOs."""
@@ -175,7 +179,7 @@ class CourseProcessor(AbstractProcessor):
             name=str(row.get('course_name')) if pd.notna(row.get('course_name')) else existing_course.get('name', 'Unknown Course'),
             description=str(row.get('course_description')) if pd.notna(row.get('course_description')) else existing_course.get('description', 'No description available'),
             credit_units=float(row.get('credit_units')) if pd.notna(row.get('credit_units')) else existing_course.get('credit_units', 1.0),
-            belong_to_university=1,
+            belong_to_university=self.DEFAULT_UNIVERSITY_ID,
             belong_to_faculty=existing_course.get('belong_to_faculty', self._fallback_faculty_id),
             course_area=str(row.get('course_area')) if pd.notna(row.get('course_area')) else None,
             enrolment_requirements=str(row.get('enrolment_requirements')) if pd.notna(row.get('enrolment_requirements')) else None,

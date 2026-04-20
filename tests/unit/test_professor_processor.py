@@ -1,295 +1,462 @@
 """
-Unit tests for ProfessorProcessor.
+Unit tests for ProfessorProcessor (refactored DTO pattern).
 """
 import pytest
 import pandas as pd
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
+import json
 
-from src.pipeline.processors.professor_processor import ProfessorProcessor
-from src.pipeline.processor_context import ProcessorContext
-
-
-@pytest.fixture
-def mock_config():
-    """Mock config object with verify_dir and output_base."""
-    mock = MagicMock()
-    mock.cache_dir = "/tmp/cache"
-    mock.verify_dir = "/tmp/verify"
-    mock.output_base = "/tmp/output"
-    return mock
+from src.pipeline.processors.professor_processor import (
+    ProfessorProcessor, ProfessorDTO
+)
 
 
-@pytest.fixture
-def mock_logger():
-    """Mock logger for testing."""
-    mock = MagicMock()
-    mock.info.return_value = None
-    mock.warning.return_value = None
-    mock.error.return_value = None
-    mock.debug.return_value = None
-    return mock
+class TestParseBossAliases:
+    """Tests for parse_boss_aliases helper function."""
+
+    def test_handles_none(self):
+        assert ProfessorProcessor.parse_boss_aliases(None) == []
+
+    def test_handles_empty_list(self):
+        assert ProfessorProcessor.parse_boss_aliases([]) == []
+
+    def test_handles_json_string(self):
+        result = ProfessorProcessor.parse_boss_aliases('["JOHN SMITH", "JANE DOE"]')
+        assert "JOHN SMITH" in result
+        assert "JANE DOE" in result
+
+    def test_handles_postgres_array_string(self):
+        result = ProfessorProcessor.parse_boss_aliases('{"JOHN SMITH", "JANE DOE"}')
+        assert "JOHN SMITH" in result
+        assert "JANE DOE" in result
+
+    def test_handles_single_string(self):
+        result = ProfessorProcessor.parse_boss_aliases("JOHN SMITH")
+        assert "JOHN SMITH" in result
 
 
-@pytest.fixture
-def mock_llm_client():
-    """Mock LLM client for testing."""
-    mock = MagicMock()
-    return mock
+class TestProfessorDTO:
+    """Tests for ProfessorDTO."""
 
+    def test_to_csv_row(self):
+        dto = ProfessorDTO(
+            id="test-uuid",
+            name="John Smith",
+            email="john@smu.edu.sg",
+            slug="john-smith",
+            photo_url="https://smu.edu.sg",
+            profile_url="https://smu.edu.sg",
+            belong_to_university=1,
+            boss_aliases=["JOHN SMITH", "JOHN"],
+            original_scraped_name="Dr. John Smith",
+            updated_at=None
+        )
 
-@pytest.fixture
-def processor_context(mock_config, mock_logger, mock_llm_client):
-    """Create a mocked ProcessorContext for ProfessorProcessor tests."""
-    ctx = ProcessorContext(
-        config=mock_config,
-        logger=mock_logger,
-        professors_cache={},
-        courses_cache={},
-        professor_lookup={},
-        multiple_data=pd.DataFrame(),
-        standalone_data=pd.DataFrame(),
-        new_professors=[],
-        update_professors=[],
-        llm_client=mock_llm_client,
-        llm_model_name="gemini-2.5-flash",
-        llm_batch_size=50,
-        llm_prompt="Test prompt"
-    )
-    return ctx
+        row = dto.to_csv_row()
+        assert row['id'] == "test-uuid"
+        assert row['name'] == "John Smith"
+        assert row['email'] == "john@smu.edu.sg"
+        assert row['slug'] == "john-smith"
+        assert row['belong_to_university'] == 1
+        assert '"JOHN SMITH"' in row['boss_aliases']  # JSON string
+        assert row['original_scraped_name'] == "Dr. John Smith"
+        assert 'updated_at' not in row  # None means not included
 
+    def test_to_csv_row_with_updated_at(self):
+        dto = ProfessorDTO(
+            id="test-uuid",
+            name="John Smith",
+            email="john@smu.edu.sg",
+            slug="john-smith",
+            photo_url="https://smu.edu.sg",
+            profile_url="https://smu.edu.sg",
+            boss_aliases=["JOHN SMITH"],
+            updated_at="2026-04-20T10:00:00Z"
+        )
 
-@pytest.fixture
-def professor_processor(processor_context):
-    """Create ProfessorProcessor instance with mocked context."""
-    return ProfessorProcessor(processor_context)
+        row = dto.to_csv_row()
+        assert row['updated_at'] == "2026-04-20T10:00:00Z"
 
+    def test_from_row_creates_uuid(self):
+        row = {
+            'name': 'Jane Doe',
+            'slug': 'jane-doe',
+            'boss_aliases': '["JANE DOE"]',
+            'original_scraped_name': 'Dr. Jane'
+        }
 
-class TestProfessorProcessorLoadCache:
-    """Tests for _load_cache() method."""
+        dto = ProfessorDTO.from_row(row)
 
-    def test_load_cache_does_nothing(self, professor_processor):
-        """_load_cache() should do nothing since cache is pre-loaded by TableBuilder."""
-        # Should not raise any exception
-        result = professor_processor._load_cache()
-        assert result is None
-
-
-class TestProfessorProcessorDoProcess:
-    """Tests for _do_process() method."""
-
-    def test_do_process_does_nothing(self, professor_processor, processor_context):
-        """_do_process() should do nothing since ProfessorProcessor overrides process()."""
-        # ProfessorProcessor overrides process() to call process_professors() directly,
-        # so _do_process() is intentionally empty
-        result = professor_processor._do_process()
-        assert result is None
+        assert dto.id is not None  # UUID generated
+        assert dto.name == 'Jane Doe'
+        assert dto.email == 'enquiry@smu.edu.sg'  # Default
+        assert dto.slug == 'jane-doe'
+        assert "JANE DOE" in dto.boss_aliases
+        assert dto.original_scraped_name == 'Dr. Jane'
+        assert dto.updated_at is None  # CREATE mode
 
 
 class TestExtractUniqueProfessors:
-    """Tests for _extract_unique_professors() method."""
+    """Tests for _extract_unique_professors method."""
 
-    def test_extracts_unique_professors_from_multiple_data(self, professor_processor, processor_context):
-        """Should extract unique professor names from multiple_data DataFrame."""
-        processor_context.multiple_data = pd.DataFrame({
-            'professor_name': [
-                'John Smith',
-                'Jane Doe',
-                'John Smith',  # duplicate
-                'Prof. John Smith',  # variation
-            ]
+    def test_extracts_simple_names(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['John Smith', 'Jane Doe', 'John Smith']
         })
 
-        unique_profs, variations = professor_processor._extract_unique_professors()
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={}
+        )
 
-        # Should have unique names (normalized)
-        assert len(unique_profs) >= 2
+        unique_profs, variations = processor._extract_unique_professors()
 
-    def test_extracts_with_variations(self, professor_processor, processor_context):
-        """Should track variations for professors with multiple name formats."""
-        processor_context.multiple_data = pd.DataFrame({
-            'professor_name': [
-                'LIM CHONG BOON DENNIS, PhD',
-                'DENNIS LIM',
-            ]
+        assert 'John Smith' in unique_profs
+        assert 'Jane Doe' in unique_profs
+        assert len(unique_profs) == 2  # Deduplicated
+
+    def test_extracts_comma_separated_names(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['LIM CHONG BOON DENNIS, PhD', 'DENNIS LIM']
         })
 
-        unique_profs, variations = professor_processor._extract_unique_professors()
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={}
+        )
 
-        # Should extract variations for same professor
-        assert len(unique_profs) >= 1
+        unique_profs, variations = processor._extract_unique_professors()
 
-    def test_skips_empty_and_tba(self, professor_processor, processor_context):
-        """Should skip empty names, NaN, and TBA entries."""
-        processor_context.multiple_data = pd.DataFrame({
-            'professor_name': [
-                'Valid Professor',
-                None,
-                pd.NA,
-                '',
-                'TBA',
-                'TO BE ANNOUNCED',
-                'nan',
-            ]
+        # Should split comma-separated names
+        assert 'LIM CHONG BOON DENNIS' in unique_profs
+        assert 'PhD' in unique_profs  # The extension after comma
+
+    def test_skips_empty_and_tba(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['Valid Professor', None, '', 'TBA', 'TO BE ANNOUNCED', 'nan']
         })
 
-        unique_profs, variations = professor_processor._extract_unique_professors()
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={}
+        )
 
-        # Only 'Valid Professor' should remain
+        unique_profs, variations = processor._extract_unique_professors()
+
         assert 'Valid Professor' in unique_profs
         assert len(unique_profs) == 1
 
+    def test_tracks_variations(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['YUESHEN, BART ZHOU', 'BART ZHOU']
+        })
 
-class TestLookupProfessorWithFallback:
-    """Tests for _lookup_professor_with_fallback() method."""
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={}
+        )
 
-    def test_returns_none_for_empty_input(self, professor_processor):
-        """Should return None for empty/NaN professor name."""
-        assert professor_processor._lookup_professor_with_fallback(None) is None
-        assert professor_processor._lookup_professor_with_fallback('') is None
-        assert professor_processor._lookup_professor_with_fallback(pd.NA) is None
+        unique_profs, variations = processor._extract_unique_professors()
 
-    def test_returns_none_for_nan_string(self, professor_processor):
-        """Should return None for 'nan' string."""
-        result = professor_processor._lookup_professor_with_fallback('nan')
+        # Variations should track that YUESHEN, BART ZHOU maps to BART ZHOU
+        assert 'YUESHEN, BART ZHOU' in unique_profs
+        assert 'BART ZHOU' in unique_profs
+
+
+class TestNormalizationFallback:
+    """Tests for _normalize_professor_name_fallback method."""
+
+    def test_handles_none(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        boss_name, afterclass_name = processor._normalize_professor_name_fallback(None)
+        assert boss_name == "UNKNOWN"
+        assert afterclass_name == "Unknown"
+
+    def test_handles_asian_surname_format(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        boss_name, afterclass_name = processor._normalize_professor_name_fallback("LIM, CHONG BOON DENNIS")
+
+        assert "LIM" in boss_name
+        assert "CHONG" in afterclass_name
+
+    def test_handles_western_given_name(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        # "DAVID LEE" - LEE is Asian surname, DAVID is Western given name
+        boss_name, afterclass_name = processor._normalize_professor_name_fallback("DAVID LEE")
+
+        assert boss_name == "DAVID LEE"
+        assert "LEE" in afterclass_name
+
+    def test_removes_middle_initials(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        boss_name, afterclass_name = processor._normalize_professor_name_fallback("JOHN B. SMITH")
+
+        # Should remove middle initial B.
+        assert "B" not in boss_name.split()
+        assert "SMITH" in afterclass_name
+
+
+class TestResolutionChain:
+    """Tests for the 8-strategy resolution chain."""
+
+    def test_strategy1_direct_lookup(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        processor._professor_lookup["JOHN SMITH"] = {"database_id": "uuid-123", "boss_name": "JOHN SMITH", "afterclass_name": "John Smith"}
+
+        result = processor._resolve_single_professor("John Smith", "JOHN SMITH", "John Smith")
+
+        assert result == 'matched'
+
+    def test_strategy2_boss_name_lookup(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        processor._professor_lookup["JOHN SMITH"] = {"database_id": "uuid-123", "boss_name": "JOHN SMITH", "afterclass_name": "John Smith"}
+
+        # Looking for "SMITH, JOHN" but boss_name "JOHN SMITH" is in lookup
+        result = processor._resolve_single_professor("Smith, John", "JOHN SMITH", "John Smith")
+
+        assert result == 'matched'
+
+    def test_strategy3_cache_direct_match(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={"JOHN SMITH": {"id": "uuid-456", "name": "John Smith"}}
+        )
+
+        result = processor._resolve_single_professor("John Smith", "JOHN SMITH", "John Smith")
+
+        assert result == 'matched'
+
+    def test_strategy8_subset_matching(self):
+        """Strategy 7: Subset matching - 'WARREN CHIK' matches 'KAM WAI WARREN CHIK'."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        # Full name in lookup
+        processor._professor_lookup["KAM WAI WARREN CHIK"] = {
+            "database_id": "uuid-123",
+            "boss_name": "KAM WAI WARREN CHIK",
+            "afterclass_name": "Kam Wai Warren Chik"
+        }
+
+        # Subset name being resolved
+        result = processor._resolve_single_professor("Warren Chik", "WARREN CHIK", "Warren Chik")
+
+        assert result == 'matched'
+        assert processor._professor_lookup["WARREN CHIK"]["database_id"] == "uuid-123"
+
+    def test_strategy8_requires_min_2_words(self):
+        """Strategy 7: Requires at least 2 words to avoid false positives."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        # Single word should NOT trigger subset matching
+        processor._professor_lookup["JOHN SMITH"] = {
+            "database_id": "uuid-123",
+            "boss_name": "JOHN SMITH",
+            "afterclass_name": "John Smith"
+        }
+
+        result = processor._resolve_single_professor("John", "JOHN", "John")
+
+        # Single word should not match via subset (would return None = create new)
         assert result is None
 
-    def test_direct_lookup_in_professor_lookup(self, professor_processor, processor_context):
-        """Should find professor via direct lookup in professor_lookup."""
-        processor_context.professor_lookup['JOHN SMITH'] = {
-            'database_id': 'uuid-123',
-            'boss_name': 'JOHN SMITH',
-            'afterclass_name': 'John Smith'
+    def test_strategy8_name_variations_kam_wai_chik(self):
+        """Strategy 7: Test various name permutations of Kam Wai Warren Bartholomew Chik.
+
+        This tests that different name variations (with/without initials, short forms,
+        different word orderings) all resolve correctly via subset matching.
+        """
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        # Full name in lookup
+        processor._professor_lookup["KAM WAI WARREN BARTHOLOMEW CHIK"] = {
+            "database_id": "uuid-kam-wai",
+            "boss_name": "KAM WAI WARREN BARTHOLOMEW CHIK",
+            "afterclass_name": "Kam Wai Warren Bartholomew Chik"
         }
 
-        result = professor_processor._lookup_professor_with_fallback('John Smith')
+        # Test various name permutations
+        test_cases = [
+            # (input_name, expected_match)
+            ("Kam Wai Warren Bartholomew CHIK", True),   # Exact
+            ("Kam Wai CHIK", True),                     # Short form (first + surname)
+            ("Warren B. CHIK", True),                   # Middle initial short form
+            ("Kam Wai Warren B. CHIK", True),           # Partial with initial
+            ("Kam Wai", True),                          # Very short
+            ("Bartholomew CHIK", True),                  # Middle + surname
+            ("Warren Bartholomew CHIK", True),          # Last part + surname
+            ("KAM WAI CHIK", True),                    # All caps short
+            ("WARREN CHIK", True),                      # Just last + surname
+            ("KAM WAI WARREN CHIK", True),              # Partial
+            # Additional variations
+            ("Kam Wai W. CHIK", True),                  # Single initial
+            ("Kam W. CHIK", True),                       # Partial with initial
+            ("Warren Bartholomew B. CHIK", True),       # Two words + initial
+            ("W. CHIK", False),                         # Single initial only (not 2+ words)
+            ("Kam CHIK", True),                          # Short first + surname
+            ("Wai CHIK", True),                         # Middle name + surname
+            ("Kam Wai Bartholomew CHIK", True),         # Skip Warren
+            ("WARREN BARTHOLOMEW CHIK", True),         # Two middle + surname
+            ("Kam Wai Warren Bartholomew C.", True),   # Initial C removed → 4-word subset of 5
+            ("KAM WAI WAREN CHIK", False),               # Typo - WAREN ≠ WARREN (not fuzzy)
+        ]
 
-        # Should find via direct lookup - returns database_id
-        assert result is not None
-        # Result will be uuid-123 if found, otherwise a newly created professor UUID
-        assert result == 'uuid-123' or result is not None  # Either found or created
+        for name, should_match in test_cases:
+            boss, after = processor._normalize_professor_name_fallback(name)
+            result = processor._resolve_single_professor(name, boss, after)
+            expected = 'matched' if should_match else None
+            assert result == expected, \
+                f"Failed for '{name}': expected {expected}, got {result}"
 
-    def test_variation_lookup_with_comma(self, professor_processor, processor_context):
-        """Should find professor via variation lookup with comma removed."""
-        processor_context.professor_lookup['JOHN SMITH'] = {
-            'database_id': 'uuid-456',
-            'boss_name': 'JOHN SMITH',
-            'afterclass_name': 'John Smith'
-        }
+    def test_strategy8_session_deduplication(self):
+        """Strategy 8: Session deduplication - matches against newly created professors.
 
-        result = professor_processor._lookup_professor_with_fallback('John, Smith')
+        When multiple professors are processed in the same batch, Strategy 8 ensures
+        that subsequent variations of the same professor are matched to the first
+        created professor, not creating duplicates.
+        """
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
 
-        # Should find via variation lookup - returns database_id
-        assert result is not None
-        # Result will be uuid-456 if found, otherwise a newly created professor UUID
-        assert result == 'uuid-456' or result is not None  # Either found or created
+        # Simulate a professor was already created in this session
+        existing_dto = ProfessorDTO(
+            id="uuid-session-1",
+            name="Kam Wai Warren Bartholomew Chik",
+            email="kamwai@smu.edu.sg",
+            slug="kam-wai-warren-bartholomew-chik",
+            photo_url="https://smu.edu.sg",
+            profile_url="https://smu.edu.sg",
+            boss_aliases=["KAM WAI WARREN BARTHOLOMEW CHIK", "KAM WAI CHIK", "WARREN CHIK"],
+            original_scraped_name="Kam Wai Warren Bartholomew CHIK"
+        )
+        processor._new_professors_dtos.append(existing_dto)
 
-    def test_partial_word_matching(self, professor_processor, processor_context):
-        """Should find professor via partial word matching (Strategy 4)."""
-        processor_context.professors_cache['DENNIS LIM'] = {
-            'id': 'uuid-789',
-            'name': 'LIM CHONG BOON DENNIS',
-            'boss_aliases': '["DENNIS LIM"]'
-        }
+        # Now try to resolve a variation of the same professor
+        result = processor._resolve_single_professor(
+            "Kam Wai CHIK",
+            "KAM WAI CHIK",
+            "Kam Wai CHIK"
+        )
 
-        result = professor_processor._lookup_professor_with_fallback('DENNIS LIM')
+        # Should match via session deduplication (Strategy 8)
+        assert result == 'matched'
+        assert processor._professor_lookup["KAM WAI CHIK"]["database_id"] == "uuid-session-1"
 
-        # Should match via partial word matching
-        assert result == 'uuid-789'
+    def test_creates_new_when_no_match(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
 
-    def test_fuzzy_matching(self, professor_processor, processor_context):
-        """Should find professor via fuzzy matching (Strategy 5)."""
-        processor_context.professor_lookup['JOHN DOE'] = {
-            'database_id': 'uuid-abc',
-            'boss_name': 'JOHN DOE',
-            'afterclass_name': 'John Doe'
-        }
+        result = processor._resolve_single_professor("New Professor", "NEW PROFESSOR", "New Professor")
 
-        # Fuzzy match: "JOHNN DOE" should match "JOHN DOE"
-        result = professor_processor._lookup_professor_with_fallback('JOHNN DOE')
+        assert result is None  # None means should CREATE
 
-        # Result depends on fuzzy threshold, may not match
-        # This tests the fuzzy lookup is attempted
-        assert result is not None or result is None  # Just verify it runs
+
+class TestProcessMethod:
+    """Integration tests for process() method."""
+
+    def test_process_returns_new_professors(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['Brand New Professor']
+        })
+
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={}
+        )
+
+        new_profs, updated_profs = processor.process()
+
+        assert len(new_profs) == 1
+        assert isinstance(new_profs[0], ProfessorDTO)
+        # afterclass_name normalizes last word to uppercase if identified as surname
+        assert new_profs[0].name == 'Brand New PROFESSOR'
+        assert len(updated_profs) == 0
+
+    def test_process_matches_existing_professor(self):
+        raw_data = pd.DataFrame({
+            'professor_name': ['JOHN SMITH']
+        })
+
+        processor = ProfessorProcessor(
+            raw_data=raw_data,
+            professors_cache={"JOHN SMITH": {"id": "existing-uuid", "name": "John Smith"}}
+        )
+
+        new_profs, updated_profs = processor.process()
+
+        # Should NOT create new - found in cache
+        assert len(new_profs) == 0
+        assert len(updated_profs) == 0
 
 
 class TestCreateNewProfessor:
-    """Tests for _create_new_professor() method."""
+    """Tests for _create_new_professor method."""
 
-    def test_creates_correct_record_structure(self, professor_processor, processor_context):
-        """Should create professor record with all required fields."""
-        processor_context.professors_cache = {}
-        processor_context.new_professors = []
-        processor_context.professor_lookup = {}
-
-        with patch.object(professor_processor.professor_normalizer, 'normalize') as mock_norm:
-            mock_norm.return_value = ('JOHN SMITH', 'John Smith')
-
-            prof_id = professor_processor._create_new_professor('John Smith')
-
-        # Verify record was created
-        assert len(processor_context.new_professors) == 1
-        new_prof = processor_context.new_professors[0]
-
-        assert 'id' in new_prof
-        assert new_prof['name'] == 'John Smith'
-        assert new_prof['email'] == 'enquiry@smu.edu.sg'  # Default email
-        assert new_prof['slug'] is not None
-        assert new_prof['belong_to_university'] == 1
-        assert 'boss_aliases' in new_prof
-        assert 'original_scraped_name' in new_prof
-
-    def test_increments_stats(self, professor_processor, processor_context):
-        """Should increment professors_created stat."""
-        processor_context.professors_cache = {}
-        processor_context.new_professors = []
-        processor_context.stats['professors_created'] = 0
-
-        with patch.object(professor_processor.professor_normalizer, 'normalize') as mock_norm:
-            mock_norm.return_value = ('JANE DOE', 'Jane Doe')
-
-            professor_processor._create_new_professor('Jane Doe')
-
-        assert processor_context.stats['professors_created'] == 1
-
-    def test_prevents_duplicates_in_session(self, professor_processor, processor_context):
-        """Should not create duplicate professor if already created in this session."""
-        processor_context.professors_cache = {}
-        processor_context.new_professors = []
-        processor_context.professor_lookup = {}
-
-        with patch.object(professor_processor.professor_normalizer, 'normalize') as mock_norm:
-            mock_norm.return_value = ('JOHN SMITH', 'John Smith')
-
-            id1 = professor_processor._create_new_professor('John Smith')
-            id2 = professor_processor._create_new_professor('John Smith')
-
-        # Should have created only one record
-        assert len(processor_context.new_professors) == 1
-        # Second call should return same ID
-        assert id1 == id2
-
-
-class TestProfessorProcessorIntegration:
-    """Integration tests for ProfessorProcessor."""
-
-    def test_process_professors_workflow(self, professor_processor, processor_context):
-        """Test the full professor processing workflow."""
-        processor_context.multiple_data = pd.DataFrame({
-            'professor_name': ['Dr. Test Professor']
-        })
-        processor_context.professors_cache = {}
-        processor_context.new_professors = []
-        processor_context.professor_lookup = {}
-        processor_context.stats['professors_created'] = 0
-
-        with patch.object(professor_processor.professor_normalizer, 'normalize_professors_batch') as mock_batch:
-            with patch.object(professor_processor.professor_normalizer, 'normalize') as mock_norm:
-                mock_batch.return_value = {'Dr. Test Professor': ('TEST PROFESSOR', 'Test Professor')}
-                mock_norm.return_value = ('TEST PROFESSOR', 'Test Professor')
-
-                professor_processor.process_professors()
-
-        # Should have logged processing
-        processor_context.logger.info.assert_any_call(
-            '👥 Processing professors...'
+    def test_creates_dto_with_correct_fields(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
         )
+
+        dto = processor._create_new_professor(
+            prof_name="Dr. Test Professor",
+            boss_name="TEST PROFESSOR",
+            afterclass_name="Test Professor",
+            variations=set()
+        )
+
+        assert dto.id is not None  # UUID generated
+        assert dto.name == "Test Professor"
+        assert dto.email == "enquiry@smu.edu.sg"  # Default
+        assert "TEST PROFESSOR" in dto.boss_aliases
+        assert "DR. TEST PROFESSOR" in dto.boss_aliases  # original name added
+        assert dto.original_scraped_name == "Dr. Test Professor"
+        assert dto.updated_at is None  # CREATE mode
+
+    def test_creates_with_variations(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+
+        dto = processor._create_new_professor(
+            prof_name="Test",
+            boss_name="TEST",
+            afterclass_name="Test Prof",
+            variations={"TEST", "PROF TEST"}
+        )
+
+        # Should include variations in boss_aliases
+        assert len(dto.boss_aliases) >= 2
