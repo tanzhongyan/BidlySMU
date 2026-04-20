@@ -1,84 +1,55 @@
 """
 CourseProcessor - handles course CREATE vs UPDATE logic.
-Extracted from table_builder.py process_courses method.
+Class-based processor that returns (new_courses, updated_courses) DTOs.
 """
 import re
-import uuid
 from collections import defaultdict
-from typing import Dict, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Dict, List, Tuple, Any
 
 import pandas as pd
 
+from src.logging.logger import get_logger
 from src.pipeline.abstract_processor import AbstractProcessor
-from src.pipeline.processor_context import ProcessorContext
+from src.pipeline.dtos.course_dto import CourseDTO
 
 
 class CourseProcessor(AbstractProcessor):
     """Processes course records from standalone data."""
 
-    def __init__(self, context: ProcessorContext):
-        super().__init__(context)
+    def __init__(
+        self,
+        raw_data: pd.DataFrame,
+        courses_cache: Dict[str, Any],
+        faculties_cache: Dict[int, Any]
+    ):
+        self._logger = get_logger(__name__)
+        self._raw_data = raw_data
+        self._courses_cache = courses_cache
+        self._faculties_cache = faculties_cache
         self._prefix_faculty_index: Dict[str, int] = {}
-        self._fallback_faculty_id: Optional[int] = None
+        self._fallback_faculty_id: int = 1
 
-    def process(self):
-        """Template method for course processing."""
-        self._load_cache()
-        self._do_process()
-        self._collect_results()
-        self._persist()
-
-    def _load_cache(self) -> None:
-        # Cache already loaded into context.courses_cache by TableBuilder
-        pass
-
-    def _do_process(self) -> None:
-        """Execute course processing logic."""
-        self._logger.info("Processing courses with robust CREATE vs. UPDATE logic...")
-
-        # Build faculty resolution index once before processing
+    def process(self) -> Tuple[List[CourseDTO], List[CourseDTO]]:
+        """Process courses and return (new_courses, updated_courses) DTOs."""
         self._build_faculty_resolution_index()
-
-        processed_course_codes_in_run = set()
-
-        for idx, row in self.context.standalone_data.iterrows():
-            course_code = row.get('course_code')
-            if pd.isna(course_code) or course_code in processed_course_codes_in_run:
-                continue
-
-            processed_course_codes_in_run.add(course_code)
-
-            # Check if the course already exists in our database cache
-            if course_code in self.context.courses_cache:
-                self._process_update(row, course_code)
-            else:
-                self._process_create(row, course_code)
-
-        self._logger.info(f"Course processing complete. New: {self.context.stats['courses_created']}, Updated: {self.context.stats['courses_updated']}.")
+        return self._do_process()
 
     def _build_faculty_resolution_index(self) -> None:
-        """
-        Build prefix-to-faculty index from existing courses for fast lookup.
-        Also determines the fallback faculty (most common overall).
-        """
+        """Build prefix-to-faculty index from existing courses for fast lookup."""
         prefix_faculty_counts: Dict[str, Dict[int, int]] = defaultdict(lambda: defaultdict(int))
-        overall_faculty_counts: Dict[int, int] = defaultdict(int)
 
-        for existing_code, existing_course in self.context.courses_cache.items():
-            faculty_id = existing_course.get('belong_to_faculty')
+        for _, course in self._courses_cache.items():
+            faculty_id = course.get('belong_to_faculty')
             if faculty_id is None:
                 continue
 
-            # Handle numpy types and validate
             try:
                 fid = int(faculty_id)
             except (ValueError, TypeError):
                 continue
 
-            overall_faculty_counts[fid] += 1
-
-            # Extract prefix
-            prefix_match = re.match(r'^([A-Z-]+)', existing_code.upper())
+            prefix_match = re.match(r'^([A-Z-]+)', course.get('code', '').upper())
             if prefix_match:
                 prefix = prefix_match.group(1)
                 prefix_faculty_counts[prefix][fid] += 1
@@ -88,12 +59,9 @@ class CourseProcessor(AbstractProcessor):
             most_common_faculty = max(faculty_counts.keys(), key=lambda fid: faculty_counts[fid])
             self._prefix_faculty_index[prefix] = most_common_faculty
 
-        # Determine fallback faculty (most common overall)
-        if overall_faculty_counts:
-            self._fallback_faculty_id = max(
-                overall_faculty_counts.keys(),
-                key=lambda fid: overall_faculty_counts[fid]
-            )
+        # Determine fallback faculty (first faculty in cache or 1)
+        if self._faculties_cache:
+            self._fallback_faculty_id = list(self._faculties_cache.keys())[0]
 
         self._logger.info(
             f"Built faculty resolution index: {len(self._prefix_faculty_index)} prefixes, "
@@ -101,15 +69,9 @@ class CourseProcessor(AbstractProcessor):
         )
 
     def _determine_faculty_for_course(self, course_code: str) -> int:
-        """
-        Determine the faculty for a new course using prefix matching.
-
-        Returns:
-            Faculty ID (never None - uses fallback if prefix unknown)
-        """
+        """Determine the faculty for a new course using prefix matching."""
         prefix_match = re.match(r'^([A-Z-]+)', course_code.upper())
         if not prefix_match:
-            # No prefix extracted - use fallback
             self._logger.warning(
                 f"Could not extract prefix from course code '{course_code}'. "
                 f"Using fallback faculty {self._fallback_faculty_id}."
@@ -119,101 +81,115 @@ class CourseProcessor(AbstractProcessor):
         prefix = prefix_match.group(1)
 
         if prefix in self._prefix_faculty_index:
-            faculty_id = self._prefix_faculty_index[prefix]
-            return faculty_id
+            return self._prefix_faculty_index[prefix]
 
         # Unknown prefix - log warning and use fallback
-        known_prefixes = list(self._prefix_faculty_index.keys())
         self._logger.warning(
             f"Unknown course prefix '{prefix}' for course '{course_code}'. "
             f"This prefix has not been seen in existing courses. "
             f"Using fallback faculty {self._fallback_faculty_id} (most common overall). "
-            f"Please verify this is correct or add the new faculty to the database. "
-            f"Known prefixes: {sorted(known_prefixes)[:20]}..."
+            f"Please verify this is correct or add the new faculty to the database."
         )
         return self._fallback_faculty_id
 
-    def _process_update(self, row, course_code: str) -> None:
-        """Handle UPDATE case for existing course."""
-        existing_course = self.context.courses_cache[course_code]
-        update_record = {'id': existing_course['id'], 'code': course_code}
+    def _do_process(self) -> Tuple[List[CourseDTO], List[CourseDTO]]:
+        """Execute course processing logic.
 
-        field_mapping = {
-            'name': 'course_name',
-            'description': 'course_description',
-            'credit_units': 'credit_units',
-            'course_area': 'course_area',
-            'enrolment_requirements': 'enrolment_requirements'
-        }
-
-        if self._needs_update(existing_course, row, field_mapping):
-            for db_field, raw_field in field_mapping.items():
-                new_value = row.get(raw_field)
-                if pd.notna(new_value) and str(new_value) != str(existing_course.get(db_field)):
-                    update_record[db_field] = new_value
-
-            self.context.update_courses.append(update_record)
-            self.context.stats['courses_updated'] += 1
-
-    def _process_create(self, row, course_code: str) -> None:
-        """Handle CREATE case for new course."""
-        course_id = str(uuid.uuid4())
-
-        # Determine faculty upfront using prefix-based pattern matching
-        faculty_id = self._determine_faculty_for_course(course_code)
-
-        new_course = {
-            'id': course_id,
-            'code': course_code,
-            'name': row.get('course_name', 'Unknown Course'),
-            'description': row.get('course_description', 'No description available'),
-            'credit_units': float(row.get('credit_units', 1.0)) if pd.notna(row.get('credit_units')) else 1.0,
-            'belong_to_university': 1,
-            'belong_to_faculty': faculty_id,
-            'course_area': row.get('course_area'),
-            'enrolment_requirements': row.get('enrolment_requirements')
-        }
-        self.context.new_courses.append(new_course)
-        self.context.courses_cache[course_code] = new_course
-        self.context.stats['courses_created'] += 1
-
-    def _needs_update(self, existing_record: Dict, new_record_or_row, field_mapping: Dict[str, str]) -> bool:
+        Returns:
+            Tuple of (new_courses, updated_courses) as lists of CourseDTO.
         """
-        Check if existing record needs updates based on field mapping.
-        Handles dictionary-to-dictionary and row-to-record comparisons.
-        """
-        for db_field, raw_field in field_mapping.items():
-            old_value = existing_record.get(db_field)
-            new_value = new_record_or_row.get(raw_field) if hasattr(new_record_or_row, 'get') else None
+        self._logger.info("Processing courses with robust CREATE vs. UPDATE logic...")
 
-            # Type-specific comparison
-            if db_field == 'credit_units':
-                new_value = float(new_value) if pd.notna(new_value) else None
-                old_value = float(old_value) if pd.notna(old_value) else None
+        results_new: List[CourseDTO] = []
+        results_updated: List[CourseDTO] = []
+        processed_codes = set()
+
+        for _, row in self._raw_data.iterrows():
+            course_code = row.get('course_code')
+
+            # Skip NaN or duplicate course codes within this run
+            if pd.isna(course_code) or course_code in processed_codes:
+                continue
+            processed_codes.add(course_code)
+
+            # Check if the course already exists in our database cache
+            if course_code in self._courses_cache:
+                self._process_update(row, course_code, results_updated)
             else:
-                if pd.isna(new_value):
-                    new_value = None
-                else:
-                    new_value = str(new_value).strip()
+                self._process_create(row, course_code, results_new)
 
-                if pd.isna(old_value):
-                    old_value = None
-                else:
-                    old_value = str(old_value).strip() if old_value is not None else None
+        self._logger.info(
+            f"Course processing complete. "
+            f"New: {len(results_new)}, Updated: {len(results_updated)}."
+        )
 
-            # Check for actual change
-            if new_value != old_value:
-                # Don't overwrite existing data with empty data
-                if new_value is None or new_value == '':
-                    if old_value is not None and old_value != '':
-                        continue
+        return results_new, results_updated
+
+    def _needs_update(self, existing_record: Dict, new_record_or_row) -> bool:
+        """Check if course needs update based on field comparison."""
+        field_comparisons = [
+            ('course_name', 'name'),
+            ('course_description', 'description'),
+            ('credit_units', 'credit_units'),
+            ('course_area', 'course_area'),
+            ('enrolment_requirements', 'enrolment_requirements')
+        ]
+
+        for csv_field, db_field in field_comparisons:
+            new_val = new_record_or_row.get(csv_field) if hasattr(new_record_or_row, 'get') else None
+            old_val = existing_record.get(db_field)
+
+            # Handle NaN/NA values
+            new_is_na = pd.isna(new_val)
+            old_is_na = pd.isna(old_val)
+
+            if new_is_na and old_is_na:
+                continue
+            if new_is_na or old_is_na:
                 return True
+
+            # Compare string values (strip whitespace)
+            new_str = str(new_val).strip()
+            old_str = str(old_val).strip()
+
+            if new_str != old_str:
+                return True
+
         return False
 
-    def _collect_results(self) -> None:
-        # Output already appended to context.new_courses / update_courses during _do_process
-        pass
+    def _process_update(
+        self,
+        row: pd.Series,
+        course_code: str,
+        results_updated: List[CourseDTO]
+    ) -> None:
+        """Handle UPDATE case for existing course."""
+        existing_course = self._courses_cache[course_code]
 
-    def _persist(self) -> None:
-        # Courses are persisted via TableBuilder's _execute_db_operations
-        pass
+        if not self._needs_update(existing_course, row):
+            return
+
+        updated_dto = CourseDTO(
+            id=existing_course['id'],
+            code=course_code,
+            name=str(row.get('course_name')) if pd.notna(row.get('course_name')) else existing_course.get('name', 'Unknown Course'),
+            description=str(row.get('course_description')) if pd.notna(row.get('course_description')) else existing_course.get('description', 'No description available'),
+            credit_units=float(row.get('credit_units')) if pd.notna(row.get('credit_units')) else existing_course.get('credit_units', 1.0),
+            belong_to_university=1,
+            belong_to_faculty=existing_course.get('belong_to_faculty', self._fallback_faculty_id),
+            course_area=str(row.get('course_area')) if pd.notna(row.get('course_area')) else None,
+            enrolment_requirements=str(row.get('enrolment_requirements')) if pd.notna(row.get('enrolment_requirements')) else None,
+            updated_at=datetime.now(timezone.utc)  # Explicitly set on UPDATE
+        )
+        results_updated.append(updated_dto)
+
+    def _process_create(
+        self,
+        row: pd.Series,
+        course_code: str,
+        results_new: List[CourseDTO]
+    ) -> None:
+        """Handle CREATE case for new course."""
+        faculty_id = self._determine_faculty_for_course(course_code)
+        new_dto = CourseDTO.from_row(row, faculty_id)
+        results_new.append(new_dto)
