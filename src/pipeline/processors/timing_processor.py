@@ -7,7 +7,7 @@ import pandas as pd
 from typing import Set, Tuple
 from collections import defaultdict
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
 
 

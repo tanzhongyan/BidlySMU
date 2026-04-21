@@ -5,16 +5,14 @@ Extracted from table_builder.py run_phase3_boss_processing and related methods.
 import os
 import pandas as pd
 from datetime import datetime
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
 from src.pipeline.processors.acad_term_processor import AcadTermProcessor
 from src.pipeline.processors.professor_processor import ProfessorProcessor
 from src.pipeline.processors.course_processor import CourseProcessor
 from src.pipeline.processors.class_processor import ClassProcessor
 from src.pipeline.processors.timing_processor import TimingProcessor
-from src.utils.schedule_resolver import parse_window_name
-from src.utils.class_id_resolver import find_all_class_ids
-from src.utils.cache_resolver import safe_int, safe_float
+from src.parser.bidding_window_parser import parse_bidding_window
 from src.db.database_helper import DatabaseHelper
 
 
@@ -322,7 +320,7 @@ class BOSSProcessor(AbstractProcessor):
         for window_index, (results_date, window_name, folder_suffix) in enumerate(processing_range):
             self._log_boss_activity(f"🔄 Processing window {window_index + 1}/{len(processing_range)}: {window_name}")
 
-            round_str, window_num = parse_window_name(window_name)
+            round_str, window_num = parse_bidding_window(window_name, allow_abbrev=True)
             if not round_str or not window_num:
                 self._log_boss_activity(f"⚠️ Could not parse window: {window_name}")
                 continue
@@ -398,7 +396,7 @@ class BOSSProcessor(AbstractProcessor):
             if pd.isna(course_code) or pd.isna(section) or pd.isna(class_boss_id):
                 continue
 
-            class_ids = find_all_class_ids(
+            class_ids = self.find_all_class_ids(
                 acad_term_id, class_boss_id,
                 self.context.new_classes,
                 getattr(self.context, 'existing_classes_cache', []),
@@ -463,7 +461,7 @@ class BOSSProcessor(AbstractProcessor):
                     if pd.isna(class_boss_id):
                         continue
 
-                    class_ids = find_all_class_ids(
+                    class_ids = self.find_all_class_ids(
                         acad_term_id, class_boss_id,
                         self.context.new_classes,
                         getattr(self.context, 'existing_classes_cache', []),
@@ -472,8 +470,8 @@ class BOSSProcessor(AbstractProcessor):
                     if not class_ids:
                         continue
 
-                    total_val = safe_int(row.get('total'))
-                    enrolled_val = safe_int(row.get('current_enrolled'))
+                    total_val = self.safe_int(row.get('total'))
+                    enrolled_val = self.safe_int(row.get('current_enrolled'))
 
                     for class_id in class_ids:
                         bid_result_key = (bid_window_id, class_id)
@@ -482,10 +480,10 @@ class BOSSProcessor(AbstractProcessor):
                                 'bid_window_id': bid_window_id,
                                 'class_id': class_id,
                                 'vacancy': total_val,
-                                'opening_vacancy': safe_int(row.get('opening_vacancy')),
+                                'opening_vacancy': self.safe_int(row.get('opening_vacancy')),
                                 'before_process_vacancy': total_val - enrolled_val if total_val is not None and enrolled_val is not None else None,
-                                'dice': safe_int(row.get('d_i_c_e') or row.get('dice')),
-                                'after_process_vacancy': safe_int(row.get('after_process_vacancy')),
+                                'dice': self.safe_int(row.get('d_i_c_e') or row.get('dice')),
+                                'after_process_vacancy': self.safe_int(row.get('after_process_vacancy')),
                                 'enrolled_students': enrolled_val,
                                 'median': None,
                                 'min': None
@@ -517,7 +515,7 @@ class BOSSProcessor(AbstractProcessor):
             return
 
         # Parse and filter for current window
-        parsed_windows = overall_df[bidding_window_col].apply(parse_window_name)
+        parsed_windows = overall_df[bidding_window_col].apply(lambda x: parse_bidding_window(x, allow_abbrev=True))
         overall_df['round'] = parsed_windows.apply(lambda x: x[0] if isinstance(x, tuple) else None)
         overall_df['window'] = parsed_windows.apply(lambda x: x[1] if isinstance(x, tuple) else None)
 
@@ -525,7 +523,7 @@ class BOSSProcessor(AbstractProcessor):
         overall_df['round'] = overall_df['round'].astype(str)
         overall_df['window'] = pd.to_numeric(overall_df['window']).astype(int)
 
-        round_str, window_num = parse_window_name(window_name)
+        round_str, window_num = parse_bidding_window(window_name, allow_abbrev=True)
         window_filtered_df = overall_df[
             (overall_df['round'] == str(round_str)) &
             (overall_df['window'] == int(window_num))
@@ -546,7 +544,7 @@ class BOSSProcessor(AbstractProcessor):
             if not class_boss_id:
                 continue
 
-            class_ids = find_all_class_ids(
+            class_ids = self.find_all_class_ids(
                 acad_term_id, class_boss_id,
                 self.context.new_classes,
                 getattr(self.context, 'existing_classes_cache', []),
@@ -569,14 +567,14 @@ class BOSSProcessor(AbstractProcessor):
                 result_data = {
                     'bid_window_id': bid_window_id,
                     'class_id': class_id,
-                    'vacancy': safe_int(self._get_column_value(row, ['Vacancy', 'vacancy'])),
-                    'opening_vacancy': safe_int(self._get_column_value(row, ['Opening Vacancy', 'opening_vacancy', 'Opening_Vacancy'])),
-                    'before_process_vacancy': safe_int(self._get_column_value(row, ['Before Process Vacancy', 'before_process_vacancy', 'Before_Process_Vacancy'])),
-                    'dice': safe_int(self._get_column_value(row, ['D.I.C.E', 'dice', 'd_i_c_e', 'DICE'])),
-                    'after_process_vacancy': safe_int(self._get_column_value(row, ['After Process Vacancy', 'after_process_vacancy', 'After_Process_Vacancy'])),
-                    'enrolled_students': safe_int(self._get_column_value(row, ['Enrolled Students', 'enrolled_students', 'Enrolled_Students'])),
-                    'median': safe_float(median_bid),
-                    'min': safe_float(min_bid)
+                    'vacancy': self.safe_int(self._get_column_value(row, ['Vacancy', 'vacancy'])),
+                    'opening_vacancy': self.safe_int(self._get_column_value(row, ['Opening Vacancy', 'opening_vacancy', 'Opening_Vacancy'])),
+                    'before_process_vacancy': self.safe_int(self._get_column_value(row, ['Before Process Vacancy', 'before_process_vacancy', 'Before_Process_Vacancy'])),
+                    'dice': self.safe_int(self._get_column_value(row, ['D.I.C.E', 'dice', 'd_i_c_e', 'DICE'])),
+                    'after_process_vacancy': self.safe_int(self._get_column_value(row, ['After Process Vacancy', 'after_process_vacancy', 'After_Process_Vacancy'])),
+                    'enrolled_students': self.safe_int(self._get_column_value(row, ['Enrolled Students', 'enrolled_students', 'Enrolled_Students'])),
+                    'median': self.safe_float(median_bid),
+                    'min': self.safe_float(min_bid)
                 }
 
                 bid_result_key = (bid_window_id, class_id)

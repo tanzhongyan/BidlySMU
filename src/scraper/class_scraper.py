@@ -9,7 +9,7 @@ Usage:
         scraper.connect(driver)
         authenticator = ManualLogin()
         authenticator.login(driver)
-        result = scraper.scrape(start_ay_term="2024-25_T1", end_ay_term="2024-25_T1")
+        result = scraper.scrape(acad_term_id="AY202526T3A")
 
     # With automated login
     credentials = AuthCredentials.from_environment()
@@ -19,12 +19,11 @@ Usage:
         scraper.connect(driver)
         authenticator = AutomatedLogin(credentials)
         authenticator.login(driver)
-        result = scraper.scrape(start_ay_term="2024-25_T1", end_ay_term="2024-25_T1")
+        result = scraper.scrape(acad_term_id="AY202526T3A")
 """
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 import csv
 import os
 import time
@@ -34,12 +33,13 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 
-from src.base.base_scraper import BaseScraper, StaleElementError
-from src.driver.authenticator import Authenticator, ManualLogin
-from src.driver.driver_factory import ChromeDriverFactory
-from src.models.dto.scraping_result import ScrapingResult, ScraperError, ErrorType
-from src.utils.term_resolver import generate_academic_year_range
-from src.utils.schedule_resolver import get_bidding_round_info_for_term
+from src.scraper.abstract_scraper import AbstractScraper, StaleElementError
+from src.driver.authenticator import Authenticator
+from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
+from src.parser.bidding_window_parser import (
+    acad_term_id_to_dash as _acad_term_id_to_dash_module,
+    get_bidding_round_info_for_term as _get_bidding_round_info_for_term_module,
+)
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class ClassScraperConfig:
     max_retries: int = 3
 
 
-class ClassScraper(BaseScraper):
+class ClassScraper(AbstractScraper):
     """
     Scraper engine for BOSS class details.
 
@@ -69,7 +69,7 @@ class ClassScraper(BaseScraper):
         from src.config import BIDDING_SCHEDULES
         config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES)
         scraper = ClassScraper(config=config)
-        result = scraper.scrape(start_ay_term="2024-25_T1", end_ay_term="2024-25_T1")
+        result = scraper.scrape(acad_term_id="AY202526T3A")
     """
 
     TERM_CODE_MAP = {'T1': '10', 'T2': '20', 'T3A': '31', 'T3B': '32'}
@@ -90,19 +90,26 @@ class ClassScraper(BaseScraper):
             config=self._config,
             logger=logger,
         )
-        self._all_terms = ['T1', 'T2', 'T3A', 'T3B']
-        self._current_term = None
-        self._current_round_folder = None
 
     @property
     def config(self) -> ClassScraperConfig:
         """Access ClassScraper-specific configuration."""
         return self._config
 
+    def _acad_term_id_to_dash(self, acad_term_id: str) -> str:
+        return _acad_term_id_to_dash_module(acad_term_id)
+
+    def _get_bidding_round_info_for_term(
+        self,
+        ay_term: str,
+        now: datetime,
+        bidding_schedule: dict,
+    ) -> Optional[str]:
+        return _get_bidding_round_info_for_term_module(ay_term, now, bidding_schedule)
+
     def scrape(
         self,
-        start_ay_term: str = None,
-        end_ay_term: str = None,
+        acad_term_id: str = None,
         base_dir: str = 'script_input/classTimingsFull',
         authenticator: Optional[Authenticator] = None,
         driver: Optional[WebDriver] = None,
@@ -111,8 +118,7 @@ class ClassScraper(BaseScraper):
         Perform full scraping process for class details.
 
         Args:
-            start_ay_term: Start academic year term (e.g., '2024-25_T1')
-            end_ay_term: End academic year term
+            acad_term_id: Academic term ID in BOSS format (e.g., 'AY202526T3A')
             base_dir: Output directory for HTML files
             authenticator: Optional Authenticator for login
             driver: Optional WebDriver (will use injected driver if not provided)
@@ -120,7 +126,6 @@ class ClassScraper(BaseScraper):
         Returns:
             ScrapingResult with operation outcome
         """
-        # Use provided driver or existing
         target_driver = driver or self._driver
         if target_driver is None:
             raise RuntimeError("No WebDriver available. Call connect(driver) first or pass driver argument.")
@@ -131,7 +136,7 @@ class ClassScraper(BaseScraper):
                 authenticator.login(target_driver)
             except Exception as e:
                 result = ScrapingResult(
-                    ay_term=start_ay_term or "unknown",
+                    ay_term=acad_term_id or "unknown",
                     round_folder="unknown",
                 )
                 result.add_error(ScraperError.create(
@@ -142,52 +147,56 @@ class ClassScraper(BaseScraper):
                 result.finalize()
                 return result
 
-        # Generate list of terms to scrape
-        try:
-            ay_terms_to_scrape = generate_academic_year_range(start_ay_term, end_ay_term)
-        except ValueError as e:
+        if not acad_term_id:
             result = ScrapingResult(
-                ay_term=start_ay_term or "unknown",
+                ay_term="unknown",
                 round_folder="unknown",
             )
-            self._logger.error(str(e))
+            self._logger.error("acad_term_id is required")
             result.finalize()
             return result
 
         total_files_saved = 0
         now = datetime.now()
 
-        for ay_term in ay_terms_to_scrape:
-            self._logger.info(f"\nProcessing Academic Term: {ay_term}")
+        ay_term = acad_term_id
+        self._logger.info(f"\nProcessing Academic Term: {ay_term}")
 
-            round_folder = get_bidding_round_info_for_term(ay_term, now, self._config.bidding_schedules)
-            if not round_folder:
-                self._logger.info(f"Not in a bidding window for {ay_term} at this time. Skipping.")
-                continue
+        # Convert ACAD_TERM_ID format to BOSS schedule key format for lookup
+        schedule_key = self._acad_term_id_to_dash(ay_term)
+        round_folder = self._get_bidding_round_info_for_term(schedule_key, now, self._config.bidding_schedules)
+        if not round_folder:
+            self._logger.info(f"Not in a bidding window for {ay_term} at this time. Skipping.")
+            result = ScrapingResult(
+                ay_term=acad_term_id or "unknown",
+                round_folder="unknown",
+                files_saved=0,
+            )
+            result.finalize()
+            return result
 
-            target_path = Path(base_dir) / ay_term / round_folder
-            target_path.mkdir(parents=True, exist_ok=True)
+        target_path = Path(base_dir) / ay_term / round_folder
+        target_path.mkdir(parents=True, exist_ok=True)
 
-            self._logger.info(f"Scraping to: {target_path}")
+        self._logger.info(f"Scraping to: {target_path}")
 
-            # Perform the scanning for this term
-            try:
-                files_saved = self._scrape_range(
-                    target_driver,
-                    ay_term,
-                    target_path,
-                )
-                total_files_saved += files_saved
-            except Exception as e:
-                self._logger.error(f"Scraping error for {ay_term}: {e}")
+        files_saved = 0
+        try:
+            files_saved = self._scrape_range(
+                target_driver,
+                ay_term,
+                target_path,
+            )
+            total_files_saved += files_saved
+        except Exception as e:
+            self._logger.error(f"Scraping error for {ay_term}: {e}")
 
-        # Generate CSV of scraped filepaths after all terms complete
         self.generate_scraped_filepaths_csv(base_dir)
 
         self._logger.info("\nScraping process completed.")
 
         result = ScrapingResult(
-            ay_term=start_ay_term or "unknown",
+            ay_term=acad_term_id or "unknown",
             round_folder=round_folder or "unknown",
             files_saved=total_files_saved,
         )
@@ -352,38 +361,3 @@ class ClassScraper(BaseScraper):
                 writer.writerow([path])
 
         self._logger.info(f"CSV updated. Total valid files now: {len(existing_paths) + len(new_paths)}")
-
-
-if __name__ == "__main__":
-    import sys
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    from src.config import BIDDING_SCHEDULES, START_AY_TERM, END_AY_TERM
-    from src.driver.driver_factory import ChromeDriverFactory
-    from src.driver.authenticator import AutomatedLogin, AuthCredentials, ManualLogin
-    from src.scraper.coordinator import ScraperCoordinator
-    
-    config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES)
-    scraper = ClassScraper(config=config)
-    factory = ChromeDriverFactory(headless=False)
-    
-    try:
-        credentials = AuthCredentials.from_environment()
-        authenticator = AutomatedLogin(credentials)
-    except ValueError:
-        authenticator = ManualLogin()
-
-    coordinator = ScraperCoordinator(
-        driver_factory=factory,
-        authenticator=authenticator,
-        scraper=scraper
-    )
-
-    try:
-        coordinator.run(start_ay_term=START_AY_TERM, end_ay_term=END_AY_TERM)
-        sys.exit(0)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)

@@ -8,13 +8,13 @@ Usage:
         authenticator=AutomatedLogin(credentials),
         scraper=ClassScraper(),
     )
-    result = coordinator.run(start_ay_term="2025-26_T1", end_ay_term="2025-26_T1")
+    result = coordinator.run(acad_term_id="AY202526T3A")
 """
 from typing import Optional
 
 from src.driver.driver_factory import ChromeDriverFactory
 from src.driver.authenticator import Authenticator
-from src.base.base_scraper import BaseScraper
+from src.scraper.abstract_scraper import AbstractScraper
 from src.logging.logger import get_logger
 
 
@@ -33,7 +33,7 @@ class ScraperCoordinator:
         self,
         driver_factory: ChromeDriverFactory,
         authenticator: Optional[Authenticator],
-        scraper: BaseScraper,
+        scraper: AbstractScraper,
         logger=None,
     ):
         """

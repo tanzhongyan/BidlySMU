@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Set
 import pandas as pd
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
 
 

@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 from datetime import datetime
-from src.utils.cache_resolver import get_table_builder_cache_files, merge_bid_window_csv_into_cache
 from src.utils.alias_parser import parse_boss_aliases
 import traceback
 
@@ -62,6 +61,42 @@ class DatabaseHelper:
         if hasattr(obj, 'context'):
             return obj.context.existing_classes_cache
         return obj.existing_classes_cache
+
+    @staticmethod
+    def _get_table_builder_cache_files(cache_dir: str):
+        base = cache_dir if isinstance(cache_dir, str) else str(cache_dir)
+        return {
+            'professors': os.path.join(base, 'professors_cache.pkl'),
+            'courses': os.path.join(base, 'courses_cache.pkl'),
+            'acad_term': os.path.join(base, 'acad_term_cache.pkl'),
+            'faculties': os.path.join(base, 'faculties_cache.pkl'),
+            'bid_result': os.path.join(base, 'bid_result_cache.pkl'),
+            'bid_window': os.path.join(base, 'bid_window_cache.pkl'),
+            'class_availability': os.path.join(base, 'class_availability_cache.pkl'),
+            'class_exam_timing': os.path.join(base, 'class_exam_timing_cache.pkl'),
+            'class_timing': os.path.join(base, 'class_timing_cache.pkl'),
+            'classes': os.path.join(base, 'classes_cache.pkl'),
+        }
+
+    @staticmethod
+    def _merge_bid_window_csv_into_cache(bid_window_cache, new_bid_window_path, logger=None):
+        path = new_bid_window_path if isinstance(new_bid_window_path, str) else str(new_bid_window_path)
+        if not os.path.exists(path):
+            return 0
+
+        added_count = 0
+        try:
+            new_bid_window_df = pd.read_csv(path)
+            for _, row in new_bid_window_df.iterrows():
+                window_key = (row['acad_term_id'], str(row['round']), int(row['window']))
+                if window_key not in bid_window_cache:
+                    bid_window_cache[window_key] = row['id']
+                    added_count += 1
+        except Exception as exc:
+            if logger is not None:
+                logger.warning(f"Could not load new_bid_window.csv: {exc}")
+
+        return added_count
 
     @staticmethod
     def create_connection(db_adapter, logger):
@@ -136,7 +171,7 @@ class DatabaseHelper:
             logger = DatabaseHelper._get_logger(obj)
             cache_dir = DatabaseHelper._get_cache_dir(obj)
 
-            cache_files = get_table_builder_cache_files(cache_dir)
+            cache_files = DatabaseHelper._get_table_builder_cache_files(cache_dir)
 
             if not all(os.path.exists(f) for f in cache_files.values()):
                 logger.warning("⚠️ Not all cache files found. Need to download from database.")
@@ -488,7 +523,7 @@ class DatabaseHelper:
                 bid_window_cache = obj.context.bid_window_cache
 
             if bid_window_cache is not None:
-                added_count = merge_bid_window_csv_into_cache(
+                added_count = DatabaseHelper._merge_bid_window_csv_into_cache(
                     bid_window_cache,
                     new_bid_window_path,
                     logger=logger,

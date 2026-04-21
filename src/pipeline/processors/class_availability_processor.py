@@ -6,11 +6,9 @@ import os
 from datetime import datetime
 import pandas as pd
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
-from src.utils.schedule_resolver import parse_window_name
-from src.utils.schedule_resolver import get_current_live_window_name
-from src.utils.class_id_resolver import find_all_class_ids
+from src.parser.bidding_window_parser import parse_bidding_window, get_current_live_window_name
 
 
 class ClassAvailabilityProcessor(AbstractProcessor):
@@ -96,12 +94,12 @@ class ClassAvailabilityProcessor(AbstractProcessor):
             if pd.isna(course_code) or pd.isna(section) or pd.isna(acad_term_id) or pd.isna(bidding_window_str):
                 continue
 
-            round_str, window_num = parse_window_name(bidding_window_str)
+            round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
             if not all([round_str, window_num]):
                 continue
 
             class_boss_id = row.get('class_boss_id')
-            class_ids = find_all_class_ids(
+            class_ids = self.find_all_class_ids(
                 acad_term_id, class_boss_id,
                 self.context.new_classes, self.context.existing_classes_cache
             )

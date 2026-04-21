@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 from src.pipeline.processors.bid_result_processor import BidResultProcessor
 from src.pipeline.processor_context import ProcessorContext
-from src.utils.cache_resolver import safe_int, safe_float
 
 
 def create_mock_context(standalone_data_df, config=None, new_classes=None, existing_classes_cache=None):

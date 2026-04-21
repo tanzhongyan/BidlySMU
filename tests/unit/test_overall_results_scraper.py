@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import Mock
 
 from src.scraper.overall_results_scraper import OverallResultsScraper, OverallResultsConfig
-from src.models.dto.scraping_result import ScrapingResult
+from src.scraper.dtos.scraping_result import ScrapingResult
 
 
 class TestOverallResultsConfig:

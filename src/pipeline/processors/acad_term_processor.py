@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Tuple, Optional
 import logging
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.acad_term_dto import AcadTermDTO
 
 

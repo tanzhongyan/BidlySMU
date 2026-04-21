@@ -3,7 +3,7 @@ Unit tests for ScrapingResult DTOs.
 """
 from datetime import datetime
 
-from src.models.dto.scraping_result import ScrapingResult, ScraperError, ErrorType
+from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
 
 
 class TestErrorType:

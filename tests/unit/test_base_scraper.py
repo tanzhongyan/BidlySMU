@@ -1,5 +1,5 @@
 """
-Unit tests for BaseScraper.
+Unit tests for AbstractScraper.
 """
 import pytest
 from unittest.mock import Mock
@@ -8,18 +8,18 @@ from selenium.common.exceptions import (
     NoSuchElementException,
 )
 
-from src.base.base_scraper import BaseScraper
+from src.scraper.abstract_scraper import AbstractScraper
 
 
-class DummyScraper(BaseScraper):
-    """Concrete implementation of BaseScraper for testing."""
+class DummyScraper(AbstractScraper):
+    """Concrete implementation of AbstractScraper for testing."""
 
     def scrape(self, **kwargs):
         return Mock(files_saved=0, is_success=True, errors=[])
 
 
-class TestBaseScraper:
-    """Tests for BaseScraper."""
+class TestAbstractScraper:
+    """Tests for AbstractScraper."""
 
     def test_driver_property_raises_when_not_initialized(self):
         """Accessing driver property without driver should raise RuntimeError."""

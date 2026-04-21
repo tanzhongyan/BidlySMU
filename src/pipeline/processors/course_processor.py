@@ -10,7 +10,7 @@ import logging
 
 import pandas as pd
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.course_dto import CourseDTO
 
 

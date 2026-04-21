@@ -5,7 +5,7 @@ from typing import List
 import re
 from pathlib import Path
 
-from src.utils.schedule_resolver import parse_bidding_window
+from src.parser.bidding_window_parser import parse_bidding_window
 from src.logging.logger import get_logger
 
 class SMUBiddingTransformer:

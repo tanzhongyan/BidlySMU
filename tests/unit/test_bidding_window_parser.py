@@ -2,7 +2,7 @@
 Unit tests for shared bidding window parsing helpers.
 """
 
-from src.utils.schedule_resolver import parse_bidding_window, parse_window_name
+from src.parser.bidding_window_parser import parse_bidding_window
 
 
 class TestParseBiddingWindow:
@@ -25,8 +25,3 @@ class TestParseBiddingWindow:
             default_round="1",
             default_window=1,
         ) == ("2A", 3)
-
-
-class TestParseWindowName:
-    def test_parses_window_name_alias(self):
-        assert parse_window_name("Rnd 1B Win 2") == ("1B", 2)

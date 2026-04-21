@@ -16,10 +16,9 @@ import re
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.common.by import By
 
-from src.base.base_scraper import BaseScraper
+from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.driver_factory import ChromeDriverFactory
 from src.parser.excel_writer import ExcelWriter
-from src.parser.encoding_handler import EncodingHandler
 from src.logging.logger import get_logger
 
 
@@ -33,7 +32,7 @@ class ExtractionResult:
     multiple_records: List[dict] = field(default_factory=list)
 
 
-class HTMLDataExtractor(BaseScraper):
+class HTMLDataExtractor(AbstractScraper):
     """
     Extracts raw data from scraped HTML files and saves to Excel format.
 
@@ -54,34 +53,44 @@ class HTMLDataExtractor(BaseScraper):
         self._multiple_data: List[dict] = []
         self._errors: List[dict] = []
         super().__init__(driver=driver, logger=logger)
-        self._encoding_handler = EncodingHandler()
 
-    # ==================== BaseScraper Implementation ====================
+    # ==================== Encoding fix ====================
 
-    def scrape(self, **kwargs) -> ExtractionResult:
+    _ENCODING_FIXES = [
+        ('â€"', '—'),
+        ('â€™', "'"),
+        ('â€"', '"'),
+        ('â€¦', '…'),
+        ('â€¢', '•'),
+        ('â€‹', ''),
+        ('â€‚', ' '),
+        ('â€ƒ', ' '),
+        ('â€‰', ' '),
+        ('â€', '"'),
+        ('Â', ''),
+    ]
+
+    @staticmethod
+    def _clean_encoding(text: str) -> str:
+        if not text:
+            return text
+        cleaned = text
+        for bad, good in HTMLDataExtractor._ENCODING_FIXES:
+            cleaned = cleaned.replace(bad, good)
+        cleaned = re.sub(r'â€[^\w]', '', cleaned)
+        return cleaned.strip()
+
+    # ==================== AbstractScraper Implementation ====================
+
+    def scrape(self, output_path: str = 'script_input/raw_data.xlsx') -> bool:
         """Run the complete extraction process."""
-        return self.run()
 
-    # ==================== Public Methods ====================
-
-    def run(self, output_path: str = 'script_input/raw_data.xlsx') -> bool:
-        """
-        Run the complete extraction process.
-
-        Args:
-            output_path: Path to output Excel file
-
-        Returns:
-            True on success, False on failure
-        """
         self._logger.info("Starting HTML data extraction...")
 
-        # Reset data containers
         self._standalone_data = []
         self._multiple_data = []
         self._errors = []
 
-        # Set up Selenium driver if not already connected
         if self._driver is None:
             factory = ChromeDriverFactory(headless=True)
             self._driver = factory.create()
@@ -91,7 +100,6 @@ class HTMLDataExtractor(BaseScraper):
             self._save_to_excel(output_path)
             self._logger.info("HTML data extraction completed!")
             return True
-
         except Exception as e:
             self._logger.error(f"An error occurred during HTML data extraction: {e}")
             return False
@@ -317,7 +325,7 @@ class HTMLDataExtractor(BaseScraper):
             element = self._driver.find_element(by, value)
             if element:
                 raw_text = element.text.strip()
-                return self._encoding_handler.clean(raw_text)
+                return self._clean_encoding(raw_text)
             return None
         except Exception:
             return None
@@ -333,7 +341,7 @@ class HTMLDataExtractor(BaseScraper):
             element = self._driver.find_element(by, value)
             if element:
                 raw_attr = element.get_attribute(attribute)
-                return self._encoding_handler.clean(raw_attr) if raw_attr else None
+                return self._clean_encoding(raw_attr) if raw_attr else None
             return None
         except Exception:
             return None
@@ -343,7 +351,7 @@ class HTMLDataExtractor(BaseScraper):
         if not header_text:
             return None, None
 
-        clean_text = self._encoding_handler.clean(header_text)
+        clean_text = self._clean_encoding(header_text)
         clean_text = re.sub(r'<[^>]+>', '', clean_text)
         clean_text = re.sub(r'\s+', ' ', clean_text.strip())
 
@@ -384,7 +392,7 @@ class HTMLDataExtractor(BaseScraper):
     def _parse_acad_term(self, term_text: str, filepath: str = None) -> tuple:
         """Parse academic term text and return structured data."""
         if term_text:
-            term_text = self._encoding_handler.clean(term_text)
+            term_text = self._clean_encoding(term_text)
 
         pattern = r'(\d{4})-(\d{2})\s+(.*)'
         match = re.search(pattern, term_text) if term_text else None
@@ -497,13 +505,13 @@ class HTMLDataExtractor(BaseScraper):
 
             course_areas_html = course_areas_element.get_attribute('innerHTML')
             if course_areas_html:
-                course_areas_html = self._encoding_handler.clean(course_areas_html)
+                course_areas_html = self._clean_encoding(course_areas_html)
                 areas_list = re.findall(r'<li[^>]*>([^<]+)</li>', course_areas_html)
                 if areas_list:
-                    cleaned_areas = [self._encoding_handler.clean(area.strip()) for area in areas_list]
+                    cleaned_areas = [self._clean_encoding(area.strip()) for area in areas_list]
                     return ', '.join(cleaned_areas)
 
-            return self._encoding_handler.clean(course_areas_element.text.strip())
+            return self._clean_encoding(course_areas_element.text.strip())
         except Exception:
             return None
 
@@ -648,28 +656,10 @@ class HTMLDataExtractor(BaseScraper):
         """
         Determine which academic term folder to process.
 
-        Currently hardcoded to use config.START_AY_TERM for consistency with
-        the scraper (class_scraper.py) which also uses config to determine target term.
-
-        TODO: Automate this logic based on BIDDING_SCHEDULES:
-        - When in an active bidding window for term X, process term X
-        - When between terms (prep phase), process the NEXT upcoming term
-        - This allows scraping/processing to happen before a term starts
-
-        For now, hardcoding to config ensures scraper and extractor stay in sync.
+        Uses ACAD_TERM_ID from config to determine target term.
         """
-        # TODO: Replace with automated logic:
-        # from src.config import BIDDING_SCHEDULES
-        # now = datetime.now()
-        # for schedule_item in BIDDING_SCHEDULES:
-        #     results_date, window_name, folder_suffix = schedule_item
-        #     if now < results_date:
-        #         # Extract term from folder_suffix (e.g., "2510" -> "2025-26_T1")
-        #         return extract_term_from_suffix(folder_suffix)
-        # return START_AY_TERM  # Fallback to config
-
-        from src.config import START_AY_TERM
-        return START_AY_TERM
+        from src.config import ACAD_TERM_ID
+        return ACAD_TERM_ID
 
     def _find_latest_round_folder(self, term_path: str) -> Optional[str]:
         """Find the latest round folder in the academic term directory."""
@@ -689,12 +679,3 @@ class HTMLDataExtractor(BaseScraper):
             return round_folders[-1]
         except Exception:
             return None
-
-
-if __name__ == "__main__":
-    import sys
-    from dotenv import load_dotenv
-    load_dotenv()
-    extractor = HTMLDataExtractor()
-    success = extractor.run(output_path='script_input/raw_data.xlsx')
-    sys.exit(0 if success else 1)

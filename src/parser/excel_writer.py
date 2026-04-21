@@ -97,15 +97,14 @@ class ExcelWriter:
         )
 
         # Combine standalone records
-        combined_standalone = existing_standalone
-        if not unique_standalone.empty:
-            combined_standalone = pd.concat([existing_standalone, unique_standalone], ignore_index=True)
+        combined_standalone = pd.concat(
+            [existing_standalone, unique_standalone], ignore_index=True
+        )
 
         # Combine errors
-        combined_errors = existing_errors
-        if errors:
-            new_errors_df = pd.DataFrame(errors)
-            combined_errors = pd.concat([existing_errors, new_errors_df], ignore_index=True)
+        combined_errors = pd.concat(
+            [existing_errors, pd.DataFrame(errors)], ignore_index=True
+        )
 
         # Write to Excel with retry
         self._write_with_retry(combined_standalone, final_multiple, combined_errors)

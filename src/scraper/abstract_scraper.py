@@ -1,5 +1,5 @@
 """
-Base scraper module with Smart Wait Wrapper for handling StaleElementReferenceException.
+Abstract scraper base class with Smart Wait Wrapper for handling StaleElementReferenceException.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ from selenium.common.exceptions import (
 )
 
 from src.logging.logger import get_logger
-from src.models.dto.scraping_result import ScrapingResult
+from src.scraper.dtos.scraping_result import ScrapingResult
 
 
 class StaleElementError(Exception):
@@ -28,7 +28,7 @@ class StaleElementError(Exception):
     pass
 
 
-class BaseScraper(ABC):
+class AbstractScraper(ABC):
     """
     Abstract base class for all BOSS scrapers.
 
@@ -48,7 +48,7 @@ class BaseScraper(ABC):
     - take_screenshot() - debugging utility
 
     Usage:
-        class MyScraper(BaseScraper):
+        class MyScraper(AbstractScraper):
             def connect(self, driver):
                 self._driver = driver
             def scrape(self, **kwargs):
@@ -108,7 +108,7 @@ class BaseScraper(ABC):
         self._driver = value
 
     @property
-    def config(self) -> "BaseScraper.ScraperConfig":
+    def config(self) -> "AbstractScraper.ScraperConfig":
         """Access configuration."""
         return self._config
 
@@ -434,7 +434,7 @@ class BaseScraper(ABC):
 
     # ==================== Context Manager ====================
 
-    def __enter__(self) -> "BaseScraper":
+    def __enter__(self) -> "AbstractScraper":
         """Context manager entry - returns self."""
         return self
 

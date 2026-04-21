@@ -6,11 +6,9 @@ import os
 from datetime import datetime
 import pandas as pd
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.processor_context import ProcessorContext
-from src.utils.schedule_resolver import parse_window_name
-from src.utils.class_id_resolver import find_all_class_ids
-from src.utils.cache_resolver import safe_int, safe_float
+from src.parser.bidding_window_parser import parse_bidding_window
 
 
 class BidResultProcessor(AbstractProcessor):
@@ -110,11 +108,11 @@ class BidResultProcessor(AbstractProcessor):
                 if pd.isna(acad_term_id) or pd.isna(class_boss_id):
                     continue
 
-                round_str, window_num = parse_window_name(bidding_window_str)
+                round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
                 if not all([round_str, window_num]):
                     continue
 
-                class_ids = find_all_class_ids(
+                class_ids = self.find_all_class_ids(
                     acad_term_id, class_boss_id,
                     self.context.new_classes, self.context.existing_classes_cache
                 )
@@ -151,8 +149,8 @@ class BidResultProcessor(AbstractProcessor):
                 has_bid_data = pd.notna(median_bid) or pd.notna(min_bid)
 
                 # Prepare data record
-                total_val = safe_int(row.get('total'))
-                enrolled_val = safe_int(row.get('current_enrolled'))
+                total_val = self.safe_int(row.get('total'))
+                enrolled_val = self.safe_int(row.get('current_enrolled'))
 
                 for class_id in class_ids:
                     # Check if record exists
@@ -162,13 +160,13 @@ class BidResultProcessor(AbstractProcessor):
                         'bid_window_id': bid_window_id,
                         'class_id': class_id,
                         'vacancy': total_val,
-                        'opening_vacancy': safe_int(row.get('opening_vacancy')),
+                        'opening_vacancy': self.safe_int(row.get('opening_vacancy')),
                         'before_process_vacancy': total_val - enrolled_val if total_val is not None and enrolled_val is not None else None,
-                        'dice': safe_int(row.get('d_i_c_e') or row.get('dice')),
-                        'after_process_vacancy': safe_int(row.get('after_process_vacancy')),
+                        'dice': self.safe_int(row.get('d_i_c_e') or row.get('dice')),
+                        'after_process_vacancy': self.safe_int(row.get('after_process_vacancy')),
                         'enrolled_students': enrolled_val,
-                        'median': safe_float(median_bid),
-                        'min': safe_float(min_bid)
+                        'median': self.safe_float(median_bid),
+                        'min': self.safe_float(min_bid)
                     }
 
                     if bid_result_key in existing_bid_result_keys:
@@ -178,9 +176,9 @@ class BidResultProcessor(AbstractProcessor):
 
                         # Check if median or min values have changed
                         if has_bid_data:
-                            if (pd.notna(median_bid) and safe_float(median_bid) != existing_record.get('median')):
+                            if (pd.notna(median_bid) and self.safe_float(median_bid) != existing_record.get('median')):
                                 needs_update = True
-                            if (pd.notna(min_bid) and safe_float(min_bid) != existing_record.get('min')):
+                            if (pd.notna(min_bid) and self.safe_float(min_bid) != existing_record.get('min')):
                                 needs_update = True
 
                         # Also check other fields for updates

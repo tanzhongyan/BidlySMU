@@ -1,10 +1,8 @@
 from datetime import datetime
 
-# Define the academic term range you want to scrape or process.
-# For a single term, set both START and END to the same value.
-# Updated defaults to target AY2025/26 Term 3A
-START_AY_TERM = '2025-26_T3A'
-END_AY_TERM = '2025-26_T3A'
+# Define the academic term to scrape or process.
+# Using ACAD_TERM_ID format directly (BOSS database format).
+# Example: AY202526T3A = Academic Year 2025/26, Term 3A
 ACAD_TERM_ID = 'AY202526T3A'
 
 # Define the specific bidding round and window you want to target.

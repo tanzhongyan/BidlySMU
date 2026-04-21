@@ -1,86 +1,90 @@
 """
 BidWindowProcessor - handles bid window CREATE logic.
-Extracted from table_builder.py process_bid_windows method.
+Refactored to pure function pattern with DTO return.
 """
 from collections import defaultdict
+import logging
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 
-from src.pipeline.abstract_processor import AbstractProcessor
-from src.pipeline.processor_context import ProcessorContext
-from src.utils.schedule_resolver import parse_window_name
+from src.pipeline.processors.abstract_processor import AbstractProcessor
+from src.parser.bidding_window_parser import parse_bidding_window
+from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 
 
 class BidWindowProcessor(AbstractProcessor):
-    """Processes bid window records from boss_data."""
+    """Processes bid window records and returns DTOs."""
 
-    def __init__(self, context: ProcessorContext):
-        super().__init__(context)
+    def __init__(
+        self,
+        raw_data: pd.DataFrame,
+        bid_window_cache: Dict[Tuple[str, str, int], int],
+        logger: Optional[logging.Logger] = None
+    ):
+        super().__init__(logger)
+        self._raw_data = raw_data
+        self._bid_window_cache = bid_window_cache
 
-    def _load_cache(self) -> None:
-        # Bid window cache already loaded into context.bid_window_cache by TableBuilder
-        pass
-
-    def _do_process(self) -> None:
-        """Execute bid window processing logic."""
-        self._logger.info("Processing bid windows from boss_data...")
-
-        if self.context.boss_data is None or len(self.context.boss_data) == 0:
-            self._logger.error("No BOSS data loaded")
-            return
+    def process(self) -> Tuple[List[BidWindowDTO], List[BidWindowDTO]]:
+        """Main entry point - returns (new_bid_windows, updated_bid_windows)."""
+        self._logger.info("Processing bid windows...")
 
         # Track all unique bid windows found in data
         found_windows = defaultdict(set)  # acad_term_id -> set of (round, window) tuples
 
-        # Discover all windows that exist in the data
-        for _, row in self.context.boss_data.iterrows():
-            acad_term_id = row.get('acad_term_id')
-            bidding_window_str = row.get('bidding_window')
+        # Optimize: drop NAs and duplicates FIRST to reduce iteration
+        relevant_cols = self._raw_data[['acad_term_id', 'bidding_window']].dropna(
+        ).drop_duplicates()
 
-            if pd.isna(acad_term_id) or pd.isna(bidding_window_str):
-                continue
+        # Discover all windows using itertuples (much faster than iterrows)
+        for row in relevant_cols.itertuples(index=False):
+            acad_term_id = row.acad_term_id
+            bidding_window_str = row.bidding_window
 
-            round_str, window_num = parse_window_name(bidding_window_str)
+            round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
 
             if acad_term_id and round_str and window_num:
                 found_windows[acad_term_id].add((round_str, window_num))
 
-        # Use the counter that was set from existing data
-        bid_window_id = self.context.bid_window_id_counter
-        round_order = {'1': 1, '1A': 2, '1B': 3, '1C': 4, '1F': 5, '2': 6, '2A': 7}
+        # Determine starting ID for new windows
+        max_id = 0
+        for bid_window_id in self._bid_window_cache.values():
+            if isinstance(bid_window_id, int) and bid_window_id > max_id:
+                max_id = bid_window_id
+        next_bid_window_id = max_id + 1
 
+        # Process each term's windows
+        results_new = []
         for acad_term_id in sorted(found_windows.keys()):
             windows_for_term = found_windows[acad_term_id]
-            sorted_windows = sorted(windows_for_term, key=lambda x: (round_order.get(x[0], 99), x[1]))
+            sorted_windows = sorted(
+                windows_for_term,
+                key=lambda x: (BidWindowDTO.ROUND_ORDER.get(x[0], 99), x[1])
+            )
 
             self._logger.info(f"Processing {acad_term_id}: found {len(sorted_windows)} windows")
 
             for round_str, window_num in sorted_windows:
                 window_key = (acad_term_id, round_str, window_num)
 
-                # Skip if already exists in database
-                if window_key in self.context.bid_window_cache:
+                # Skip if already exists in cache
+                if window_key in self._bid_window_cache:
                     self._logger.info(f"Bid window already exists: {acad_term_id} Round {round_str} Window {window_num}")
                     continue
 
-                new_bid_window = {
-                    'id': bid_window_id,
-                    'acad_term_id': acad_term_id,
-                    'round': round_str,
-                    'window': window_num
-                }
+                # Create new BidWindowDTO
+                dto = BidWindowDTO(
+                    id=next_bid_window_id,
+                    acad_term_id=acad_term_id,
+                    round=round_str,
+                    window=window_num
+                )
+                results_new.append(dto)
+                self._bid_window_cache[window_key] = next_bid_window_id
 
-                self.context.new_bid_windows.append(new_bid_window)
-                self.context.bid_window_cache[window_key] = bid_window_id
-                self.context.boss_stats['bid_windows_created'] = self.context.boss_stats.get('bid_windows_created', 0) + 1
+                self._logger.info(f"Created bid_window {next_bid_window_id}: {acad_term_id} Round {round_str} Window {window_num}")
+                next_bid_window_id += 1
 
-                self._logger.info(f"Created bid_window {bid_window_id}: {acad_term_id} Round {round_str} Window {window_num}")
-                bid_window_id += 1
-
-        self.context.bid_window_id_counter = bid_window_id
-        self._logger.info(f"Created {self.context.stats.get('bid_windows_created', 0)} bid windows")
-
-    def _collect_results(self) -> None:
-        pass
-
-    def _persist(self) -> None:
-        pass
+        self._logger.info(f"Created {len(results_new)} bid windows")
+        return results_new, []  # Always empty updated list (bid_window only does CREATE)

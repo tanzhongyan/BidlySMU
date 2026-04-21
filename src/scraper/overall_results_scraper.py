@@ -22,10 +22,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, StaleElementReferenceException
 
-from src.base.base_scraper import BaseScraper
+from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.authenticator import Authenticator
 from src.logging.logger import get_logger
-from src.models.dto.scraping_result import ScrapingResult, ScraperError, ErrorType
+from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
 
 
 @dataclass
@@ -37,16 +37,10 @@ class OverallResultsConfig:
     delay: int = 5
     headless: bool = False
     page_size: int = 50
-    max_retries: int = 3  # For stale element handling
-    desired_columns: List[str] = field(default_factory=lambda: [
-        'Term', 'Session', 'Bidding Window', 'Course Code', 'Description',
-        'Section', 'Vacancy', 'Opening Vacancy', 'Before Process Vacancy',
-        'D.I.C.E', 'After Process Vacancy', 'Enrolled Students',
-        'Median Bid', 'Min Bid', 'Instructor', 'School/Department'
-    ])
+    max_retries: int = 3
 
 
-class OverallResultsScraper(BaseScraper):
+class OverallResultsScraper(AbstractScraper):
     """
     Scraper for BOSS Overall Results page.
 
@@ -61,12 +55,19 @@ class OverallResultsScraper(BaseScraper):
         'Median Bid', 'Min Bid', 'Instructor', 'School/Department'
     ]
 
-    TERM_MAP = {
-        'Term 1': 'T1',
-        'Term 2': 'T2',
-        'Term 3A': 'T3A',
-        'Term 3B': 'T3B'
+    _TERM_DISPLAY_MAP = {
+        'T1': 'Term 1',
+        'T2': 'Term 2',
+        'T3A': 'Term 3A',
+        'T3B': 'Term 3B'
     }
+
+    @staticmethod
+    def _transform_term_format(short_term: str) -> str:
+        """Convert '2025-26_T1' -> '2025-26 Term 1' for BOSS website dropdown."""
+        year_part, term_part = short_term.split('_')
+        full_term_name = OverallResultsScraper._TERM_DISPLAY_MAP.get(term_part, term_part)
+        return f"{year_part} {full_term_name}"
 
     def __init__(
         self,
@@ -79,15 +80,9 @@ class OverallResultsScraper(BaseScraper):
         self._config = config
         super().__init__(driver=driver, config=self._config, logger=logger)
 
-    # ==================== BaseScraper Implementation ====================
+    # ==================== AbstractScraper Implementation ====================
 
-    def scrape(self, **kwargs) -> ScrapingResult:
-        """Run the scraper."""
-        return self.run(**kwargs)
-
-    # ==================== Public Methods ====================
-
-    def run(
+    def scrape(
         self,
         term: str,
         bid_round: Optional[str] = None,
@@ -108,7 +103,6 @@ class OverallResultsScraper(BaseScraper):
         Returns:
             ScrapingResult with operation outcome
         """
-        from src.utils.term_resolver import transform_term_format
 
         result = ScrapingResult(
             ay_term=term or "unknown",
@@ -116,7 +110,7 @@ class OverallResultsScraper(BaseScraper):
         )
 
         try:
-            website_term = transform_term_format(term)
+            website_term = self._transform_term_format(term)
 
             # Auto-detect phase if not specified
             if bid_round is None or bid_window is None:
@@ -651,48 +645,3 @@ class OverallResultsScraper(BaseScraper):
         except Exception as e:
             self._logger.error(f"Failed to save data to Excel: {e}")
             raise
-
-
-if __name__ == "__main__":
-    import sys
-    from dotenv import load_dotenv
-    load_dotenv()   
-
-    from src.config import BIDDING_SCHEDULES, START_AY_TERM, TARGET_ROUND, TARGET_WINDOW
-    from src.driver.driver_factory import ChromeDriverFactory
-    from src.driver.authenticator import AutomatedLogin, AuthCredentials, ManualLogin
-    from src.scraper.coordinator import ScraperCoordinator
-
-    config = OverallResultsConfig(
-        bidding_schedules=BIDDING_SCHEDULES,
-        start_ay_term=START_AY_TERM,
-        headless=False,
-        delay=5
-    )
-    scraper = OverallResultsScraper(config=config)
-    factory = ChromeDriverFactory(headless=False)
-
-    try:
-        credentials = AuthCredentials.from_environment()
-        authenticator = AutomatedLogin(credentials)
-    except ValueError:
-        authenticator = ManualLogin()
-
-    coordinator = ScraperCoordinator(
-        driver_factory=factory,
-        authenticator=authenticator,
-        scraper=scraper
-    )
-
-    try:
-        coordinator.run(
-            term=START_AY_TERM,
-            bid_round=TARGET_ROUND,
-            bid_window=TARGET_WINDOW,
-            output_dir="./script_input/overallBossResults"
-        )
-        print("Test succeeded.")
-        sys.exit(0)
-    except Exception as e:
-        print(f"Test failed: {e}")
-        sys.exit(1)

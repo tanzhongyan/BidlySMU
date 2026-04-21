@@ -16,17 +16,13 @@ from dotenv import load_dotenv
 from src.db.adapters import Psycopg2Adapter
 from src.db.database_helper import DatabaseHelper
 from src.logging.logger import get_logger
-from src.utils.schedule_resolver import parse_window_name
-from src.pipeline.transformer import SMUBiddingTransformer
-from src.pipeline.safety_factor_calculator import SafetyFactorCalculator
-from src.utils.cache_resolver import (
-    merge_bid_windows_with_new_csv,
-)
-from src.utils.schedule_resolver import (
+from src.parser.bidding_window_parser import (
     get_current_live_window_name,
     get_processing_range_to_current,
+    parse_bidding_window,
 )
-from src.utils.term_resolver import convert_target_term_format
+from src.pipeline.transformer import SMUBiddingTransformer
+from src.pipeline.safety_factor_calculator import SafetyFactorCalculator
 
 
 @dataclass(frozen=True)
@@ -249,13 +245,13 @@ class BidPredictorCoordinator:
         return pd.DataFrame(class_mappings)
 
     def _get_bid_window_id_for_window(self, window_name, target_term):
-        round_val, window_num = parse_window_name(window_name)
+        round_val, window_num = parse_bidding_window(window_name, allow_abbrev=True)
         if not round_val or not window_num:
             result = f"PENDING_{window_name.replace(' ', '_')}"
             self._logger.warning(f"Could not parse window '{window_name}': returning {result}")
             return result
-        target_term_id = convert_target_term_format(target_term)
-        cache_key = (target_term_id, str(round_val), int(window_num))
+        # target_term is already in ACAD_TERM_ID format (e.g., 'AY202526T1')
+        cache_key = (target_term, str(round_val), int(window_num))
 
         # Debug: Log cache key and show what's in cache
         self._logger.info(f"🔍 Looking for bid_window with key={cache_key}")
@@ -274,7 +270,7 @@ class BidPredictorCoordinator:
                 self._logger.info(f"✅ Found via fallback: {bid_id} for {cache_key_check}")
                 return bid_id
 
-        result = f"PENDING_{target_term_id}_{round_val}_{window_num}"
+        result = f"PENDING_{target_term}_{round_val}_{window_num}"
         self._logger.warning(f"❌ No bid_window found for {cache_key}, returning PENDING: {result}")
         return result
 
@@ -343,6 +339,52 @@ class BidPredictorCoordinator:
 
         self._logger.info("Data loading completed")
 
+    def _merge_bid_windows_with_new_csv(
+        self,
+        existing_bid_windows_df,
+        new_bid_window_path,
+    ):
+        combined = existing_bid_windows_df.copy() if existing_bid_windows_df is not None else pd.DataFrame()
+        path = Path(new_bid_window_path)
+
+        if not path.exists():
+            return combined
+
+        try:
+            new_bid_windows_df = pd.read_csv(path)
+            if combined.empty:
+                combined = new_bid_windows_df
+            else:
+                combined = pd.concat([combined, new_bid_windows_df], ignore_index=True)
+
+            if not combined.empty:
+                combined.drop_duplicates(subset=['acad_term_id', 'round', 'window'], keep='last', inplace=True)
+        except Exception as exc:
+            self._logger.warning(f"Could not load new_bid_window.csv: {exc}")
+
+        return combined
+
+    def _get_processing_range_to_current(
+        self,
+        bidding_schedule_for_term,
+        now,
+    ):
+        """Return list of window names from start of schedule to current live window (inclusive)."""
+        if not bidding_schedule_for_term:
+            return []
+
+        current_live_window = get_current_live_window_name(bidding_schedule_for_term, now)
+        if not current_live_window:
+            return []
+
+        processing_range: List[str] = []
+        for _, window_name, _ in bidding_schedule_for_term:
+            processing_range.append(window_name)
+            if window_name == current_live_window:
+                break
+
+        return processing_range
+
     def run(self):
         try:
             self.db_connection = DatabaseHelper.create_connection(self._db_adapter, self._logger)
@@ -370,7 +412,7 @@ class BidPredictorCoordinator:
                 raise ValueError(f"No bidding schedule found for term '{self.config.start_ay_term}'")
 
             current_live_window = get_current_live_window_name(bidding_schedule, current_time)
-            processing_range = get_processing_range_to_current(bidding_schedule, current_time)
+            processing_range = self._get_processing_range_to_current(bidding_schedule, current_time)
 
             # Load existing predictions from database
             existing_predictions_df = pd.DataFrame()
@@ -405,10 +447,9 @@ class BidPredictorCoordinator:
                     raise
 
             combined_bid_windows_df = bid_windows_df.copy() if not bid_windows_df.empty else pd.DataFrame()
-            combined_bid_windows_df = merge_bid_windows_with_new_csv(
+            combined_bid_windows_df = self._merge_bid_windows_with_new_csv(
                 combined_bid_windows_df,
                 Path('script_output/new_bid_window.csv'),
-                logger=self._logger,
             )
 
             all_bid_predictions = []

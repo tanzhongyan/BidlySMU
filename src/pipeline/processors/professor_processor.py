@@ -14,7 +14,7 @@ from google import genai
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Set
 
-from src.pipeline.abstract_processor import AbstractProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.professor_dto import ProfessorDTO
 
 

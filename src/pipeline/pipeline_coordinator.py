@@ -6,14 +6,16 @@ import os
 import csv
 import pandas as pd
 import pickle
-from typing import Dict
+from typing import Dict, List
 
 from src.logging.logger import get_logger
 from src.pipeline.processors.acad_term_processor import AcadTermProcessor
 from src.pipeline.processors.course_processor import CourseProcessor
 from src.pipeline.processors.professor_processor import ProfessorProcessor
+from src.pipeline.processors.bid_window_processor import BidWindowProcessor
 from src.pipeline.dtos.course_dto import CourseDTO
 from src.pipeline.dtos.professor_dto import ProfessorDTO
+from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 
 # Sheet name constants
 SHEET_STANDALONE = 'standalone'
@@ -114,6 +116,22 @@ class PipelineCoordinator:
 
         self._logger.info(f"✅ Processed professors: {len(professors_new)} new, {len(professors_updated)} updated")
 
+        # Process bid windows
+        bid_window_processor = BidWindowProcessor(
+            raw_data=self.raw_data[SHEET_STANDALONE],
+            bid_window_cache=self.db_cache.get('bid_window', {}),
+            logger=self._logger
+        )
+        bid_windows_new, bid_windows_updated = bid_window_processor.process()
+        self.results['bid_windows'] = {'new': bid_windows_new, 'updated': bid_windows_updated}
+
+        # Build composite lookup for fact tables: (acad_term_id, round, window) -> BidWindowDTO
+        self.results['bid_window_lookup'] = self._build_composite_lookup(
+            'bid_windows',
+            ['acad_term_id', 'round', 'window']
+        )
+        self._logger.info(f"✅ Processed bid_windows: {len(bid_windows_new)} new, {len(bid_windows_updated)} updated")
+
         self._logger.info("🚀 Pipeline completed")
         return self.results
 
@@ -136,6 +154,23 @@ class PipelineCoordinator:
             lookup[getattr(dto, key_field)] = dto
         for dto in data.get('updated', []):
             lookup[getattr(dto, key_field)] = dto
+        return lookup
+
+    def _build_composite_lookup(self, dimension: str, key_fields: List[str]) -> dict:
+        """Build lookup using multiple fields as key.
+
+        Args:
+            dimension: The dimension name in self.results
+            key_fields: List of DTO attribute names to use as composite key
+
+        Returns:
+            Dict mapping tuple of key_field values to DTO
+        """
+        lookup = {}
+        data = self.results.get(dimension, {})
+        for dto in data.get('new', []) + data.get('updated', []):
+            key = tuple(getattr(dto, f) for f in key_fields)
+            lookup[key] = dto
         return lookup
 
     def _write_csv(self, filename: str, dtos: list, log_message: str):

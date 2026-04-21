@@ -5,12 +5,11 @@ from datetime import datetime
 
 import pytest
 
-from src.utils.schedule_resolver import (
+from src.parser.bidding_window_parser import (
     get_bidding_round_info_for_term,
     get_current_live_window_name,
     get_processing_range_to_current,
     parse_bidding_window,
-    parse_window_name,
 )
 
 
@@ -295,25 +294,6 @@ class TestParseBiddingWindow:
         """Should handle extra spaces in input."""
         result = parse_bidding_window("  Round   1A   Window   3  ")
         assert result == ("1A", 3)
-
-
-class TestParseWindowName:
-    """Tests for parse_window_name()."""
-
-    def test_parses_round_1_window_2(self):
-        """Should parse 'Round 1 Window 2'."""
-        result = parse_window_name("Round 1 Window 2")
-        assert result == ("1", 2)
-
-    def test_parses_rnd_win_abbreviation(self):
-        """Should parse abbreviated format via parse_window_name."""
-        result = parse_window_name("Rnd 2A Win 3")
-        assert result == ("2A", 3)
-
-    def test_returns_none_none_for_invalid_input(self):
-        """Should return (None, None) for invalid input."""
-        result = parse_window_name("")
-        assert result == (None, None)
 
 
 class TestGetBiddingRoundInfoForTermAdditional:
