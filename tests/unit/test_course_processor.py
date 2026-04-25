@@ -406,3 +406,220 @@ class TestCourseDTO:
         assert dto.name == 'Intro to CS'
         assert dto.belong_to_faculty == 2
         assert dto.belong_to_university == 1
+
+
+class TestCreditUnitsAsFloat:
+    """Tests for credit_units parsing as float.
+
+    Sample credit_units values from raw_data.xlsx: [0.5, 1.0, 1.5, 1.25, 2.0, 0.75, 28.0, 0.25, 26.0, 12.0, 4.0, 5.0, 6.0]
+    """
+
+    def test_credit_units_half(self):
+        """Should parse 0.5 credit units correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 0.5,
+            'course_area': 'Computing',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.credit_units == 0.5
+        assert isinstance(dto.credit_units, float)
+
+    def test_credit_units_one_and_quarter(self):
+        """Should parse 1.25 credit units correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 1.25,
+            'course_area': 'Computing',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.credit_units == 1.25
+        assert isinstance(dto.credit_units, float)
+
+    def test_credit_units_large_value(self):
+        """Should parse large credit units (28.0) correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 28.0,
+            'course_area': 'Computing',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.credit_units == 28.0
+        assert isinstance(dto.credit_units, float)
+
+
+class TestCourseAreaPatterns:
+    """Tests for course_area handling.
+
+    Sample course_area values from raw_data.xlsx:
+    - "There is no applicable Course Area."
+    - "EMBA Programme Core"
+    - "MITB Digi Transformation Track Core"
+    - "GPGM Programme Core (OM)"
+    """
+
+    def test_course_area_no_applicable(self):
+        """Should handle 'There is no applicable Course Area.' correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 3.0,
+            'course_area': 'There is no applicable Course Area.',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.course_area == 'There is no applicable Course Area.'
+
+    def test_course_area_emba_programme_core(self):
+        """Should handle 'EMBA Programme Core' correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 3.0,
+            'course_area': 'EMBA Programme Core',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.course_area == 'EMBA Programme Core'
+
+    def test_course_area_mitb_track(self):
+        """Should handle MITB track areas correctly."""
+        row = pd.Series({
+            'course_code': 'MGMT715',
+            'course_name': 'Business Ethics',
+            'course_description': 'Description',
+            'credit_units': 3.0,
+            'course_area': 'MITB Digi Transformation Track Core',
+            'enrolment_requirements': 'None'
+        })
+        dto = CourseDTO.from_row(row, faculty_id=1)
+        assert dto.course_area == 'MITB Digi Transformation Track Core'
+
+
+class TestCourseCodeFormats:
+    """Tests for various course code formats.
+
+    Based on sample data:
+    - Standard: MGMT715, STAT701A
+    - Hyphenated: COR-COMM1304, COR-STAT1202
+    - With underscore: LAW103_603 (underscore in section, not course code)
+    """
+
+    def test_hyphenated_course_code(self):
+        """Should handle hyphenated course codes like COR-COMM1304."""
+        raw_data = pd.DataFrame({
+            'course_code': ['COR-COMM9999'],
+            'course_name': ['Management Communication'],
+            'course_description': ['Description'],
+            'credit_units': [3.0],
+            'course_area': ['Communication'],
+            'enrolment_requirements': ['None']
+        })
+        faculties_cache = {4: {'id': 4, 'name': 'SCIS'}}
+
+        # Build faculty index with COR-COMM prefix (from existing courses)
+        courses_cache_existing = {
+            'COR-COMM1304': {'code': 'COR-COMM1304', 'belong_to_faculty': 4}
+        }
+        processor = CourseProcessor(raw_data, courses_cache_existing, faculties_cache)
+        new_courses, _ = processor.process()
+
+        assert len(new_courses) == 1
+        assert new_courses[0].code == 'COR-COMM9999'
+        assert new_courses[0].belong_to_faculty == 4  # SCIS
+
+    def test_course_code_with_underscore(self):
+        """Should handle course codes that look like they have underscore.
+
+        Note: LAW103_603 has underscore but it's part of section in raw_data.
+        The course code is LAW103.
+        """
+        raw_data = pd.DataFrame({
+            'course_code': ['LAW103'],
+            'course_name': ['Law and Ethics'],
+            'course_description': ['Description'],
+            'credit_units': [3.0],
+            'course_area': ['Law'],
+            'enrolment_requirements': ['None']
+        })
+        courses_cache = {}
+        faculties_cache = {2: {'id': 2, 'name': 'YPHSL'}}
+
+        processor = CourseProcessor(raw_data, courses_cache, faculties_cache)
+        new_courses, _ = processor.process()
+
+        assert len(new_courses) == 1
+        assert new_courses[0].code == 'LAW103'
+
+
+class TestFacultyMappingFromRawData:
+    """Tests for faculty mapping based on course prefix patterns from raw data.
+
+    Faculty mapping based on sample data:
+    1 - LKCSB (Lee Kong Chian School of Business)
+    2 - YPHSL (Yong Pung How School of Law)
+    3 - SOE (School of Economics)
+    4 - SCIS (School of Computing and Information Systems)
+    5 - SOSS (School of Social Sciences)
+    6 - SOA (School of Accountancy)
+    7 - CIS (College of Integrative Studies)
+    8 - CEC (Center for English Communication)
+    """
+
+    def test_mgmt_prefix_maps_to_lkcsb(self):
+        """MGMT prefix should map to faculty 1 (LKCSB)."""
+        # First, build the cache with existing courses that establish the pattern
+        courses_cache = {
+            'MGMT715': {'code': 'MGMT715', 'belong_to_faculty': 1},
+            'MGMT701': {'code': 'MGMT701', 'belong_to_faculty': 1},
+        }
+        faculties_cache = {1: {'id': 1, 'name': 'LKCSB'}}
+
+        raw_data = pd.DataFrame({
+            'course_code': ['MGMT800'],
+            'course_name': ['Advanced Management'],
+            'course_description': ['Description'],
+            'credit_units': [3.0],
+            'course_area': ['Business'],
+            'enrolment_requirements': ['None']
+        })
+
+        processor = CourseProcessor(raw_data, courses_cache, faculties_cache)
+        new_courses, _ = processor.process()
+
+        assert len(new_courses) == 1
+        assert new_courses[0].belong_to_faculty == 1  # LKCSB
+
+    def test_law_prefix_maps_to_yphsl(self):
+        """LAW prefix should map to faculty 2 (YPHSL)."""
+        courses_cache = {
+            'LAW101': {'code': 'LAW101', 'belong_to_faculty': 2},
+            'LAW201': {'code': 'LAW201', 'belong_to_faculty': 2},
+        }
+        faculties_cache = {2: {'id': 2, 'name': 'YPHSL'}}
+
+        raw_data = pd.DataFrame({
+            'course_code': ['LAW300'],
+            'course_name': ['Advanced Law'],
+            'course_description': ['Description'],
+            'credit_units': [3.0],
+            'course_area': ['Law'],
+            'enrolment_requirements': ['None']
+        })
+
+        processor = CourseProcessor(raw_data, courses_cache, faculties_cache)
+        new_courses, _ = processor.process()
+
+        assert len(new_courses) == 1
+        assert new_courses[0].belong_to_faculty == 2  # YPHSL

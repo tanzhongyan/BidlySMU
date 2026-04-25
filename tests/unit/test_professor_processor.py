@@ -460,3 +460,137 @@ class TestCreateNewProfessor:
 
         # Should include variations in boss_aliases
         assert len(dto.boss_aliases) >= 2
+
+
+class TestCleanAlias:
+    """Tests for _clean_alias helper method.
+
+    This method handles special character encoding and normalization.
+    """
+
+    def test_handles_none(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._clean_alias(None)
+        assert result == ""
+
+    def test_handles_empty_string(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._clean_alias("")
+        assert result == ""
+
+    def test_handles_regular_name(self):
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._clean_alias("JOHN SMITH")
+        assert result == "JOHN SMITH"
+
+    def test_normalizes_special_quotes(self):
+        """Should normalize special quote characters to straight quotes."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._clean_alias("JOHN'S SMITH")
+        assert "'" in result  # Should be normalized
+
+
+class TestSplitProfessorNames:
+    """Tests for _split_professor_names method.
+
+    This method splits professor names separated by comma.
+    Only splits if the part after comma is a single word.
+    """
+
+    def test_split_simple_comma_separated(self):
+        """Should split 'SMITH, JOHN' into ['SMITH', 'JOHN']."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._split_professor_names("SMITH, JOHN")
+        assert result == ["SMITH", "JOHN"]
+
+    def test_no_split_single_name(self):
+        """Should not split single name without comma."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._split_professor_names("JOHN SMITH")
+        assert result == ["JOHN SMITH"]
+
+    def test_no_split_multi_word_second_part(self):
+        """Should NOT split if part after comma is multi-word.
+
+        e.g., 'YUESHEN, BART ZHOU' should NOT be split because 'BART ZHOU' is 2 words.
+        """
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._split_professor_names("YUESHEN, BART ZHOU")
+        # Multi-word second part should be kept intact
+        assert result == ["YUESHEN, BART ZHOU"]
+
+    def test_split_with_single_word_after_comma(self):
+        """Should split if part after comma is a single word."""
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache={}
+        )
+        result = processor._split_professor_names("SMITH, JOHN")
+        assert len(result) == 2
+        assert "SMITH" in result
+        assert "JOHN" in result
+
+
+class TestBuildLookupFromCache:
+    """Tests for _build_lookup_from_cache method.
+
+    This builds the professor_lookup from professors_cache for resolution.
+    """
+
+    def test_builds_lookup_with_names(self):
+        """Should build lookup with professor names from cache."""
+        professors_cache = {
+            "JOHN SMITH": {"id": "uuid-1", "name": "John Smith", "boss_aliases": []},
+            "JANE DOE": {"id": "uuid-2", "name": "Jane Doe", "boss_aliases": []}
+        }
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache=professors_cache
+        )
+
+        processor._build_lookup_from_cache()
+
+        assert "JOHN SMITH" in processor._professor_lookup
+        assert "JANE DOE" in processor._professor_lookup
+
+    def test_builds_lookup_with_aliases(self):
+        """Should also add boss_aliases to lookup."""
+        professors_cache = {
+            "JOHN SMITH": {
+                "id": "uuid-1",
+                "name": "John Smith",
+                "boss_aliases": '["J. SMITH", "JOHN S."]'
+            }
+        }
+        processor = ProfessorProcessor(
+            raw_data=pd.DataFrame(),
+            professors_cache=professors_cache
+        )
+
+        processor._build_lookup_from_cache()
+
+        # Should have both the original name and aliases
+        assert "JOHN SMITH" in processor._professor_lookup
+        assert "J. SMITH" in processor._professor_lookup
+        assert "JOHN S." in processor._professor_lookup

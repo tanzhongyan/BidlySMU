@@ -88,16 +88,16 @@ class TestHTMLDataExtractorRun:
     """Tests for HTMLDataExtractor.run() method."""
 
     def test_run_returns_bool(self, mock_webdriver):
-        """run() should return a boolean."""
+        """scrape() should return a boolean."""
         extractor = HTMLDataExtractor(driver=mock_webdriver)
 
         with patch.object(extractor, '_process_all_files'):
             with patch.object(extractor, '_save_to_excel'):
-                result = extractor.run(output_path='test.xlsx')
+                result = extractor.scrape(output_path='test.xlsx')
                 assert isinstance(result, bool)
 
     def test_run_sets_up_driver_if_none(self, mock_webdriver):
-        """run() should set up driver if _driver is None."""
+        """scrape() should set up driver if _driver is None."""
         extractor = HTMLDataExtractor()
         assert extractor._driver is None
 
@@ -108,5 +108,5 @@ class TestHTMLDataExtractorRun:
 
             with patch.object(extractor, '_process_all_files'):
                 with patch.object(extractor, '_save_to_excel'):
-                    extractor.run(output_path='test.xlsx')
+                    extractor.scrape(output_path='test.xlsx')
                     mock_factory.create.assert_called_once()

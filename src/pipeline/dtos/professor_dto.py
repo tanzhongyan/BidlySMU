@@ -70,7 +70,8 @@ class ProfessorDTO:
             'photo_url': self.photo_url,
             'profile_url': self.profile_url,
             'belong_to_university': self.belong_to_university,
-            'boss_aliases': json.dumps(self.boss_aliases)
+            'boss_aliases': self.boss_aliases,  # psycopg2 handles list -> PostgreSQL array
+            'updated_at': datetime.now(timezone.utc)
         }
 
     @staticmethod

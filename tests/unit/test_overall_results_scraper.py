@@ -40,14 +40,10 @@ class TestOverallResultsConfig:
         assert config.max_retries == 3
 
     def test_desired_columns_preset(self):
-        """OverallResultsConfig should have desired_columns preset."""
-        config = OverallResultsConfig(
-            bidding_schedules={},
-            start_ay_term="2025-26_T1"
-        )
-        assert 'Term' in config.desired_columns
-        assert 'Course Code' in config.desired_columns
-        assert 'Median Bid' in config.desired_columns
+        """OverallResultsScraper should have DESIRED_COLUMNS preset."""
+        assert 'Term' in OverallResultsScraper.DESIRED_COLUMNS
+        assert 'Course Code' in OverallResultsScraper.DESIRED_COLUMNS
+        assert 'Median Bid' in OverallResultsScraper.DESIRED_COLUMNS
 
 
 class TestOverallResultsScraper:
@@ -68,12 +64,12 @@ class TestOverallResultsScraper:
         assert scraper._config is config
 
     def test_term_map_values(self):
-        """TERM_MAP should have correct values."""
-        assert OverallResultsScraper.TERM_MAP == {
-            'Term 1': 'T1',
-            'Term 2': 'T2',
-            'Term 3A': 'T3A',
-            'Term 3B': 'T3B'
+        """_TERM_DISPLAY_MAP should have correct values."""
+        assert OverallResultsScraper._TERM_DISPLAY_MAP == {
+            'T1': 'Term 1',
+            'T2': 'Term 2',
+            'T3A': 'Term 3A',
+            'T3B': 'Term 3B'
         }
 
     def test_desired_columns_preset(self):
@@ -95,14 +91,14 @@ class TestOverallResultsScraperScrape:
         )
         scraper = OverallResultsScraper(config=config, driver=mock_webdriver)
 
-        # Mock the run method
-        scraper.run = Mock(return_value=ScrapingResult(
+        # Mock the scrape method
+        scraper.scrape = Mock(return_value=ScrapingResult(
             ay_term="2025-26_T1",
             round_folder="R1W1",
             files_saved=10,
         ))
 
-        result = scraper.scrape()
+        result = scraper.scrape(term="2025-26_T1")
 
         assert isinstance(result, ScrapingResult)
         assert result.files_saved == 10

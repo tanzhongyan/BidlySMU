@@ -56,19 +56,19 @@ class TestBidWindowProcessor:
                 'acad_term_id': 'AY202526T1',
                 'bidding_window': 'Round 1 Window 1',
                 'course_code': 'CS101',
-                'section': 'A'
+                'section': 'G1'
             },
             {
                 'acad_term_id': 'AY202526T1',
                 'bidding_window': 'Round 1 Window 2',
                 'course_code': 'CS101',
-                'section': 'A'
+                'section': 'G1'
             },
             {
                 'acad_term_id': 'AY202526T1',
                 'bidding_window': 'Round 1 Window 1',  # Duplicate
                 'course_code': 'CS102',
-                'section': 'A'
+                'section': 'G1'
             }
         ])
 
@@ -94,7 +94,7 @@ class TestBidWindowProcessor:
                 'acad_term_id': 'AY202526T1',
                 'bidding_window': 'Round 1 Window 1',
                 'course_code': 'CS101',
-                'section': 'A'
+                'section': 'G1'
             }
         ])
 
@@ -114,10 +114,10 @@ class TestBidWindowProcessor:
     def test_uses_round_order_sorting(self):
         """Test windows are sorted by round order (1, 1A, 1B, 1C, 1F, 2, 2A)."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 2 Window 1', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1A Window 1', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1B Window 1', 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 2 Window 1', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1A Window 1', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1B Window 1', 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         processor = BidWindowProcessor(
@@ -137,8 +137,8 @@ class TestBidWindowProcessor:
     def test_handles_multiple_terms(self):
         """Test handles windows from multiple academic terms."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': 'AY202526T2', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS201', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': 'AY202526T2', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS201', 'section': 'G1'}
         ])
 
         processor = BidWindowProcessor(
@@ -157,7 +157,7 @@ class TestBidWindowProcessor:
     def test_returns_tuple_of_new_and_updated(self):
         """Test process() returns tuple of (new, updated)."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         processor = BidWindowProcessor(
@@ -191,9 +191,9 @@ class TestBidWindowProcessor:
     def test_handles_na_values(self):
         """Test skips rows with NA values."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': pd.NA, 'bidding_window': 'Round 1 Window 2', 'course_code': 'CS101', 'section': 'A'},
-            {'acad_term_id': 'AY202526T1', 'bidding_window': pd.NA, 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': pd.NA, 'bidding_window': 'Round 1 Window 2', 'course_code': 'CS101', 'section': 'G1'},
+            {'acad_term_id': 'AY202526T1', 'bidding_window': pd.NA, 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         processor = BidWindowProcessor(
@@ -211,7 +211,7 @@ class TestBidWindowProcessor:
     def test_increments_id_from_cache_max(self):
         """Test ID counter starts from max ID in cache + 1."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 3', 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 3', 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         # Pre-populate cache with different windows (not the one we're creating)
@@ -251,7 +251,7 @@ class TestBidWindowProcessor:
     def test_parses_window_names_correctly(self):
         """Test parse_bidding_window is called correctly for each row."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1A Window 2', 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1A Window 2', 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         processor = BidWindowProcessor(
@@ -271,7 +271,7 @@ class TestBidWindowProcessor:
     def test_cache_updated_after_processing(self):
         """Test that bid_window_cache is updated with new entries."""
         df = pd.DataFrame([
-            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'A'}
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Round 1 Window 1', 'course_code': 'CS101', 'section': 'G1'}
         ])
 
         cache = {}

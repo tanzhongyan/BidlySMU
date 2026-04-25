@@ -10,6 +10,7 @@ class CourseDTO:
     """DTO representing a course record."""
 
     # Column name mapping (CSV = DB in this case, per Prisma @map)
+    # Note: updated_at is NOT in COLUMNS - DB sets it via DEFAULT on INSERT
     COLUMNS = {
         'id': 'id',
         'code': 'code',
@@ -19,8 +20,7 @@ class CourseDTO:
         'belong_to_university': 'belong_to_university',
         'belong_to_faculty': 'belong_to_faculty',
         'course_area': 'course_area',
-        'enrolment_requirements': 'enrolment_requirements',
-        'updated_at': 'updated_at'
+        'enrolment_requirements': 'enrolment_requirements'
     }
 
     id: str  # UUID - generated before insert
@@ -40,7 +40,10 @@ class CourseDTO:
 
     def to_db_row(self) -> dict:
         """Convert to database row."""
-        return {self.COLUMNS[k]: getattr(self, k) for k in self.COLUMNS}
+        row = {self.COLUMNS[k]: getattr(self, k) for k in self.COLUMNS}
+        # Always set updated_at for database INSERT (NOT NULL column without DEFAULT)
+        row['updated_at'] = datetime.now(timezone.utc)
+        return row
 
     @staticmethod
     def from_row(row, faculty_id: int) -> 'CourseDTO':

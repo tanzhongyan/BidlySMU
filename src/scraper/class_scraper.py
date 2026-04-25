@@ -36,10 +36,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from src.scraper.abstract_scraper import AbstractScraper, StaleElementError
 from src.driver.authenticator import Authenticator
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
-from src.parser.bidding_window_parser import (
-    acad_term_id_to_dash as _acad_term_id_to_dash_module,
-    get_bidding_round_info_for_term as _get_bidding_round_info_for_term_module,
-)
 
 
 @dataclass(frozen=True)
@@ -48,8 +44,10 @@ class ClassScraperConfig:
     Configuration for ClassScraper - ALL dependencies explicit.
 
     bidding_schedules is REQUIRED to determine folder naming.
+    start_ay_term is the academic term in dash format (e.g., '2025-26_T3A') from config.START_AY_TERM.
     """
     bidding_schedules: dict  # REQUIRED - no default!
+    start_ay_term: str = ''  # Dash format from config.START_AY_TERM
     min_class_number: int = 1000
     max_class_number: int = 5000
     consecutive_empty_threshold: int = 300
@@ -66,8 +64,8 @@ class ClassScraper(AbstractScraper):
     Login is handled separately via Authenticator injection.
 
     Usage:
-        from src.config import BIDDING_SCHEDULES
-        config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES)
+        from src.config import BIDDING_SCHEDULES, START_AY_TERM
+        config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM)
         scraper = ClassScraper(config=config)
         result = scraper.scrape(acad_term_id="AY202526T3A")
     """
@@ -82,7 +80,7 @@ class ClassScraper(AbstractScraper):
     ):
         if config is None:
             raise ValueError(
-                "config is required. Use: ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES)"
+                "config is required. Use: ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM)"
             )
         self._config = config
         super().__init__(
@@ -95,17 +93,6 @@ class ClassScraper(AbstractScraper):
     def config(self) -> ClassScraperConfig:
         """Access ClassScraper-specific configuration."""
         return self._config
-
-    def _acad_term_id_to_dash(self, acad_term_id: str) -> str:
-        return _acad_term_id_to_dash_module(acad_term_id)
-
-    def _get_bidding_round_info_for_term(
-        self,
-        ay_term: str,
-        now: datetime,
-        bidding_schedule: dict,
-    ) -> Optional[str]:
-        return _get_bidding_round_info_for_term_module(ay_term, now, bidding_schedule)
 
     def scrape(
         self,
@@ -162,9 +149,20 @@ class ClassScraper(AbstractScraper):
         ay_term = acad_term_id
         self._logger.info(f"\nProcessing Academic Term: {ay_term}")
 
-        # Convert ACAD_TERM_ID format to BOSS schedule key format for lookup
-        schedule_key = self._acad_term_id_to_dash(ay_term)
-        round_folder = self._get_bidding_round_info_for_term(schedule_key, now, self._config.bidding_schedules)
+        # Use start_ay_term from config (already in dash format from config.START_AY_TERM)
+        schedule_key = self._config.start_ay_term
+
+        # Determine round folder name - inlined get_bidding_round_info_for_term logic
+        schedule = self._config.bidding_schedules.get(schedule_key)
+        round_folder = None
+        if schedule:
+            for results_date, *rest in schedule:
+                if now < results_date:
+                    suffix = rest[1] if len(rest) > 1 else None
+                    round_folder = f"{schedule_key}_{suffix}" if suffix else None
+                    break
+
+
         if not round_folder:
             self._logger.info(f"Not in a bidding window for {ay_term} at this time. Skipping.")
             result = ScrapingResult(

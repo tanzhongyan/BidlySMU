@@ -1,8 +1,17 @@
 .claude
 .vscode
 db_cache/
-script_input/
-script_output/
 .env
+^.env.example
 logs/
 __pycache__/
+
+# script_input: keep most files ignored, track essential input files
+script_input/
+^script_input/bidding_schedules.json
+^script_input/classification_validation_results.csv
+^script_input/regression_median_validation_results.csv
+^script_input/regression_min_validation_results.csv
+
+# script_output: entirely ignored (pipeline outputs, models, etc)
+script_output/

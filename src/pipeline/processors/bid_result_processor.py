@@ -1,209 +1,292 @@
 """
 BidResultProcessor - handles bid result CREATE and UPDATE logic.
-Extracted from table_builder.py process_bid_results method.
+Refactored to pure function pattern with explicit parameters.
+
+Two-window processing:
+- Previous window t(N-1): CREATE or UPDATE from overallBossResults.xlsx (with actual median/min)
+- Current window t(N): CREATE placeholder from raw_data.xlsx (vacancy data only, no median/min)
 """
 import os
-from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
-from src.pipeline.processors.abstract_processor import AbstractProcessor
-from src.pipeline.processor_context import ProcessorContext
-from src.parser.bidding_window_parser import parse_bidding_window
+from src.config import CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, parse_bidding_window
+from src.pipeline.dtos.bid_result_dto import BidResultDTO
+from src.pipeline.dtos.bid_window_dto import BidWindowDTO
+from src.pipeline.dtos.class_dto import ClassDTO
+from src.pipeline.dtos.course_dto import CourseDTO
 
 
-class BidResultProcessor(AbstractProcessor):
-    """Processes bid result records from standalone data."""
+class BidResultProcessor:
+    """Processes bid result records from standalone and overall results data."""
 
-    def __init__(self, context: ProcessorContext):
-        super().__init__(context)
+    def __init__(
+        self,
+        raw_data: pd.DataFrame,
+        overall_results_path: str,
+        class_lookup: Dict[Tuple, 'ClassDTO'],
+        bid_window_lookup: Dict[Tuple, 'BidWindowDTO'],
+        course_lookup: Dict[str, 'CourseDTO'] = None,
+        existing_bid_result_keys: Set[Tuple] = None,
+        bidding_schedule: List[Tuple] = None,
+        expected_acad_term_id: str = None,
+        logger: Optional[object] = None
+    ):
+        self._raw_data = raw_data
+        self._overall_results_path = overall_results_path
+        self._class_lookup = class_lookup
+        self._bid_window_lookup = bid_window_lookup
+        self._course_lookup = course_lookup or {}
+        self._existing_bid_result_keys = existing_bid_result_keys or set()
+        self._bidding_schedule = bidding_schedule or []
+        self._expected_acad_term_id = expected_acad_term_id
+        self._logger = logger
+        self._new_bid_results: List['BidResultDTO'] = []
+        self._updated_bid_results: List['BidResultDTO'] = []
 
-    def _load_cache(self) -> None:
-        pass
+    def process(self) -> Tuple[List['BidResultDTO'], List['BidResultDTO']]:
+        """Execute bid result processing logic. Returns (new_results, updated_results)."""
+        self._process_previous_window()
+        self._process_current_window()
+        return self._new_bid_results, self._updated_bid_results
 
-    def _do_process(self) -> None:
-        """Execute bid result processing logic."""
-        self._logger.info("Processing bid results from raw_data...")
+    def _load_overall_results(self) -> Optional[pd.DataFrame]:
+        """Load overallBossResults.xlsx from the correct path."""
+        if not os.path.exists(self._overall_results_path):
+            self._logger.info(f"Overall results file not found: {self._overall_results_path}")
+            return None
 
-        # Ensure the list for update records exists
-        if not hasattr(self.context, 'update_bid_result'):
-            self.context.update_bid_result = []
+        try:
+            df = pd.read_excel(self._overall_results_path, engine='openpyxl')
+            self._logger.info(f"Loaded {len(df)} records from overall results")
+            return df
+        except Exception as e:
+            self._logger.info(f"Error loading overall results: {e}")
+            return None
 
-        # === STEP 1: Determine Current and Previous Bidding Windows ===
-        now = datetime.now()
-        current_window_name = None
+    def _process_previous_window(self) -> None:
+        """Process previous window t(N-1) from overallBossResults.xlsx."""
+        previous_window_name = PREVIOUS_WINDOW_NAME
 
-        # Get the bidding schedule for the current term
-        bidding_schedule_for_term = (self.context.config.bidding_schedules or {}).get(self.context.config.start_ay_term, [])
+        if not previous_window_name:
+            self._logger.info("No previous window found - skipping t(N-1) processing")
+            return
 
-        if bidding_schedule_for_term:
-            # Find the current window (first future window)
-            for i, (results_date, window_name, folder_suffix) in enumerate(bidding_schedule_for_term):
-                if now < results_date:
-                    current_window_name = window_name
-                    break
+        self._logger.info(f"Processing bid results for previous window: '{previous_window_name}'")
 
-            # If no future window found, we're past all scheduled windows
-            if current_window_name is None and bidding_schedule_for_term:
-                current_window_name = bidding_schedule_for_term[-1][1]
+        overall_df = self._load_overall_results()
+        if overall_df is None:
+            return
+
+        if 'Bidding Window' not in overall_df.columns:
+            self._logger.info("No 'Bidding Window' column in overall results - skipping")
+            return
+
+        previous_data = overall_df[overall_df['Bidding Window'] == previous_window_name]
+        self._logger.info(f"Found {len(previous_data)} records for previous window '{previous_window_name}'")
+
+        for _, row in previous_data.iterrows():
+            self._process_previous_window_row(row)
+
+    def _process_previous_window_row(self, row: dict) -> None:
+        """Process a single row from overall results for previous window."""
+        acad_term_id = row.get('Term', '')
+        course_code = row.get('Course Code', '')
+        section = str(row.get('Section', ''))
+        bidding_window_str = row.get('Bidding Window', '')
+
+        if not acad_term_id or not course_code:
+            return
+
+        round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
+        if not all([round_str, window_num]):
+            return
+
+        window_key = (acad_term_id, round_str, window_num)
+        bid_window_dto = self._bid_window_lookup.get(window_key)
+        if not bid_window_dto:
+            return
+
+        class_ids = self._find_all_class_ids_by_course_section(acad_term_id, course_code, section)
+        if not class_ids:
+            return
+
+        median_bid = self._safe_float(row.get('Median Bid'))
+        min_bid = self._safe_float(row.get('Min Bid'))
+        vacancy = self._safe_int(row.get('Vacancy'))
+        opening_vacancy = self._safe_int(row.get('Opening Vacancy'))
+        before_process_vacancy = self._safe_int(row.get('Before Process Vacancy'))
+        dice = self._safe_int(row.get('D.I.C.E'))
+        after_process_vacancy = self._safe_int(row.get('After Process Vacancy'))
+        enrolled_students = self._safe_int(row.get('Enrolled Students'))
+
+        for class_id in class_ids:
+            bid_result_key = (bid_window_dto.id, class_id)
+
+            result_data = {
+                'bid_window_id': bid_window_dto.id,
+                'class_id': class_id,
+                'vacancy': vacancy,
+                'opening_vacancy': opening_vacancy,
+                'before_process_vacancy': before_process_vacancy,
+                'dice': dice,
+                'after_process_vacancy': after_process_vacancy,
+                'enrolled_students': enrolled_students,
+                'median': median_bid,
+                'min': min_bid,
+            }
+
+            if bid_result_key in self._existing_bid_result_keys:
+                updated_dto = BidResultDTO(
+                    bid_window_id=bid_window_dto.id,
+                    class_id=class_id,
+                    vacancy=vacancy,
+                    opening_vacancy=opening_vacancy,
+                    before_process_vacancy=before_process_vacancy,
+                    dice=dice,
+                    after_process_vacancy=after_process_vacancy,
+                    enrolled_students=enrolled_students,
+                    median=median_bid,
+                    min=min_bid
+                )
+                self._updated_bid_results.append(updated_dto)
+            else:
+                new_dto = BidResultDTO.from_row(
+                    row={},
+                    class_id=class_id,
+                    bid_window_id=bid_window_dto.id,
+                    vacancy=vacancy,
+                    opening_vacancy=opening_vacancy,
+                    before_process_vacancy=before_process_vacancy,
+                    dice=dice,
+                    after_process_vacancy=after_process_vacancy,
+                    enrolled_students=enrolled_students,
+                    median=median_bid,
+                    min_bid=min_bid
+                )
+                self._new_bid_results.append(new_dto)
+                self._existing_bid_result_keys.add(bid_result_key)
+
+    def _process_current_window(self) -> None:
+        """Process current window t(N) from raw_data.xlsx (placeholder records)."""
+        current_window_name = CURRENT_WINDOW_NAME
+
+        if not current_window_name:
+            self._logger.info("No current window found - skipping t(N) processing")
+            return
 
         self._logger.info(f"Processing bid results for current window: '{current_window_name}'")
 
-        # === STEP 2: Filter the data to only current window and current term records ===
-        if current_window_name and hasattr(self.context, 'standalone_data') and not self.context.standalone_data.empty:
-            if 'bidding_window' in self.context.standalone_data.columns:
-                original_count = len(self.context.standalone_data)
+        if self._raw_data.empty:
+            self._logger.info("No raw data available for current window processing")
+            return
 
-                # Filter by bidding window
-                current_window_data = self.context.standalone_data[
-                    self.context.standalone_data['bidding_window'] == current_window_name
-                ].copy()
+        if 'bidding_window' not in self._raw_data.columns:
+            self._logger.info("No 'bidding_window' column in raw data - skipping")
+            return
 
-                # Also filter by current academic term to prevent cross-term contamination
-                if 'acad_term_id' in current_window_data.columns:
-                    expected_term_id = self.context.expected_acad_term_id
+        current_window_data = self._raw_data[self._raw_data['bidding_window'] == current_window_name].copy()
 
-                    current_window_data = current_window_data[
-                        current_window_data['acad_term_id'] == expected_term_id
-                    ].copy()
+        if 'acad_term_id' in current_window_data.columns and self._expected_acad_term_id:
+            current_window_data = current_window_data[
+                current_window_data['acad_term_id'] == self._expected_acad_term_id
+            ]
 
-                    self._logger.info(f"Filtered data: {original_count} -> {len(current_window_data)} (window + term)")
-                else:
-                    self._logger.info(f"Filtered data from {original_count} to {len(current_window_data)} records for current window: '{current_window_name}'")
-            else:
-                self._logger.warning("No 'bidding_window' column found - processing all data")
-                current_window_data = self.context.standalone_data.copy()
-        else:
-            self._logger.warning("Could not determine current window or no standalone data - processing all data")
-            current_window_data = self.context.standalone_data.copy() if hasattr(self.context, 'standalone_data') else pd.DataFrame()
+        self._logger.info(f"Found {len(current_window_data)} records for current window '{current_window_name}'")
 
-        # Load existing bid_result data to check for duplicates
-        existing_bid_result_keys = set()
-        existing_bid_results = {}  # Store full records for update comparison
-        cache_file = self.context.config.cache_dir + '/bid_result_cache.pkl' if hasattr(self.context.config, 'cache_dir') else None
-        if cache_file:
-            if os.path.exists(cache_file):
-                try:
-                    existing_df = pd.read_pickle(cache_file)
-                    if not existing_df.empty:
-                        for _, record in existing_df.iterrows():
-                            key = (record['bid_window_id'], record['class_id'])
-                            existing_bid_result_keys.add(key)
-                            existing_bid_results[key] = record.to_dict()
-                        self._logger.info(f"Pre-loaded {len(existing_bid_result_keys)} existing bid result keys from cache.")
-                except Exception as e:
-                    self._logger.warning(f"Could not pre-load bid_result_cache: {e}")
+        for _, row in current_window_data.iterrows():
+            self._process_current_window_row(row)
 
-        newly_created_count = 0
-        updated_count = 0
+    def _process_current_window_row(self, row: dict) -> None:
+        """Process a single row from raw_data for current window (CREATE placeholder)."""
+        acad_term_id = row.get('acad_term_id')
+        class_boss_id = row.get('class_boss_id')
+        bidding_window_str = row.get('bidding_window')
 
-        # === STEP 3: Process only the filtered current window data ===
-        for idx, row in current_window_data.iterrows():
-            try:
-                course_code = row.get('course_code')
-                section = row.get('section')
-                acad_term_id = row.get('acad_term_id')
-                class_boss_id = row.get('class_boss_id')
-                bidding_window_str = row.get('bidding_window')
+        if pd.isna(acad_term_id) or pd.isna(class_boss_id):
+            return
 
-                if pd.isna(acad_term_id) or pd.isna(class_boss_id):
-                    continue
+        round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
+        if not all([round_str, window_num]):
+            return
 
-                round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
-                if not all([round_str, window_num]):
-                    continue
+        window_key = (acad_term_id, round_str, window_num)
+        bid_window_dto = self._bid_window_lookup.get(window_key)
+        if not bid_window_dto:
+            return
 
-                class_ids = self.find_all_class_ids(
-                    acad_term_id, class_boss_id,
-                    self.context.new_classes, self.context.existing_classes_cache
-                )
-                if not class_ids:
-                    continue
+        class_ids = self._find_all_class_ids(acad_term_id, class_boss_id)
+        if not class_ids:
+            return
 
-                window_key = (acad_term_id, round_str, window_num)
-                bid_window_id = self.context.bid_window_cache.get(window_key)
-                if not bid_window_id:
-                    continue
+        total_val = self._safe_int(row.get('total'))
+        enrolled_val = self._safe_int(row.get('current_enrolled'))
 
-                # FIXED: Check all possible column names for median and min
-                median_bid = None
-                min_bid = None
+        for class_id in class_ids:
+            bid_result_key = (bid_window_dto.id, class_id)
 
-                # Try all possible column names for median
-                median_column_names = ['median', 'Median', 'Median Bid', 'median_bid', 'Median_Bid', 'MEDIAN']
-                for col_name in median_column_names:
-                    if col_name in row.index:
-                        val = row[col_name]
-                        if pd.notna(val):
-                            median_bid = val
-                            break
+            if bid_result_key in self._existing_bid_result_keys:
+                continue
 
-                # Try all possible column names for min
-                min_column_names = ['min', 'Min', 'Min Bid', 'min_bid', 'Min_Bid', 'MIN']
-                for col_name in min_column_names:
-                    if col_name in row.index:
-                        val = row[col_name]
-                        if pd.notna(val):
-                            min_bid = val
-                            break
+            before_process = total_val - enrolled_val if total_val is not None and enrolled_val is not None else None
 
-                has_bid_data = pd.notna(median_bid) or pd.notna(min_bid)
+            new_dto = BidResultDTO.from_row(
+                row={},
+                class_id=class_id,
+                bid_window_id=bid_window_dto.id,
+                vacancy=total_val,
+                opening_vacancy=self._safe_int(row.get('opening_vacancy')),
+                before_process_vacancy=before_process,
+                dice=self._safe_int(row.get('d_i_c_e') or row.get('dice')),
+                after_process_vacancy=self._safe_int(row.get('after_process_vacancy')),
+                enrolled_students=enrolled_val,
+                median=None,
+                min_bid=None
+            )
+            self._new_bid_results.append(new_dto)
+            self._existing_bid_result_keys.add(bid_result_key)
 
-                # Prepare data record
-                total_val = self.safe_int(row.get('total'))
-                enrolled_val = self.safe_int(row.get('current_enrolled'))
+    def _find_all_class_ids(self, acad_term_id: str, class_boss_id) -> List[str]:
+        """Find all class IDs for a given acad_term_id and boss_id."""
+        class_ids = []
+        for (term_id, boss_id, professor_id), class_dto in self._class_lookup.items():
+            if term_id == acad_term_id and boss_id == class_boss_id:
+                class_ids.append(class_dto.id)
+        return class_ids
 
-                for class_id in class_ids:
-                    # Check if record exists
-                    bid_result_key = (bid_window_id, class_id)
+    def _find_all_class_ids_by_course_section(self, acad_term_id: str, course_code: str, section: str) -> List[str]:
+        """Find all class IDs for a given acad_term_id, course_code, and section.
 
-                    result_data = {
-                        'bid_window_id': bid_window_id,
-                        'class_id': class_id,
-                        'vacancy': total_val,
-                        'opening_vacancy': self.safe_int(row.get('opening_vacancy')),
-                        'before_process_vacancy': total_val - enrolled_val if total_val is not None and enrolled_val is not None else None,
-                        'dice': self.safe_int(row.get('d_i_c_e') or row.get('dice')),
-                        'after_process_vacancy': self.safe_int(row.get('after_process_vacancy')),
-                        'enrolled_students': enrolled_val,
-                        'median': self.safe_float(median_bid),
-                        'min': self.safe_float(min_bid)
-                    }
+        Uses course_lookup to translate course_code -> course_id, then matches
+        by (acad_term_id, course_id, section) to get all professor variants.
+        """
+        course_dto = self._course_lookup.get(course_code)
+        if not course_dto:
+            return []
 
-                    if bid_result_key in existing_bid_result_keys:
-                        # Check if update is needed
-                        existing_record = existing_bid_results.get(bid_result_key, {})
-                        needs_update = False
+        course_id = course_dto.id
+        class_ids = []
+        for (term_id, boss_id, professor_id), class_dto in self._class_lookup.items():
+            if term_id == acad_term_id and class_dto.course_id == course_id and class_dto.section == section:
+                class_ids.append(class_dto.id)
+        return class_ids
 
-                        # Check if median or min values have changed
-                        if has_bid_data:
-                            if (pd.notna(median_bid) and self.safe_float(median_bid) != existing_record.get('median')):
-                                needs_update = True
-                            if (pd.notna(min_bid) and self.safe_float(min_bid) != existing_record.get('min')):
-                                needs_update = True
+    def _safe_int(self, val) -> Optional[int]:
+        """Safely convert value to int."""
+        if pd.isna(val):
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
 
-                        # Also check other fields for updates
-                        for field in ['vacancy', 'opening_vacancy', 'before_process_vacancy', 'dice',
-                                    'after_process_vacancy', 'enrolled_students']:
-                            if result_data.get(field) is not None and result_data[field] != existing_record.get(field):
-                                needs_update = True
+    def _safe_float(self, val) -> Optional[float]:
+        """Safely convert value to float."""
+        if pd.isna(val):
+            return None
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
 
-                        if needs_update:
-                            self.context.update_bid_result.append(result_data)
-                            updated_count += 1
-                    else:
-                        # This is a NEW record
-                        self.context.new_bid_result.append(result_data)
-                        existing_bid_result_keys.add(bid_result_key)
-                        newly_created_count += 1
-
-            except Exception as e:
-                self._logger.error(f"Error processing bid result row for {row.get('course_code')}-{row.get('section')}: {e}")
-
-        self.context.boss_stats['bid_results_created'] = self.context.boss_stats.get('bid_results_created', 0) + newly_created_count
-        self._logger.info(f"Bid result checks complete. Created: {newly_created_count}, Updated: {updated_count}.")
-
-    def _collect_results(self) -> None:
-        pass
-
-    def _persist(self) -> None:
-        pass
+    

@@ -42,16 +42,17 @@ class SafetyFactorCalculator:
     def create_safety_factor_table(self, acad_term_id):
         self._logger.info(f"Creating comprehensive safety factor table for academic term: {acad_term_id}")
         try:
-            median_dir = Path('models/regression_median')
-            min_dir = Path('models/regression_min')
+            # Validation results are now stored in script_input/
+            median_path = Path('script_input/regression_median_validation_results.csv')
+            min_path = Path('script_input/regression_min_validation_results.csv')
 
             # Check if validation results files exist
-            if not (median_dir / "regression_median_validation_results.csv").exists() or not (min_dir / "regression_min_validation_results.csv").exists():
+            if not median_path.exists() or not min_path.exists():
                 self._logger.warning("Validation results files not found. Skipping safety factor table creation.")
                 return pd.DataFrame()
 
-            median_results = pd.read_csv(median_dir / "regression_median_validation_results.csv")
-            min_results = pd.read_csv(min_dir / "regression_min_validation_results.csv")
+            median_results = pd.read_csv(median_path)
+            min_results = pd.read_csv(min_path)
             
             median_errors = median_results['residuals'].values
             min_errors = min_results['residuals'].values

@@ -1,56 +1,75 @@
 """
-ClassProcessor - handles class CREATE vs UPDATE logic with TBA conversion.
-Extracted from table_builder.py process_classes method.
+ClassProcessor - handles class CREATE vs UPDATE logic.
+Refactored to pure function pattern with explicit parameters.
 """
 import uuid
 from datetime import datetime
-from typing import Dict, List, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
-from src.pipeline.processors.abstract_processor import AbstractProcessor
-from src.pipeline.processor_context import ProcessorContext
+from src.pipeline.dtos.class_dto import ClassDTO
+from src.pipeline.dtos.course_dto import CourseDTO
 
 
-class ClassProcessor(AbstractProcessor):
-    """Processes class records from standalone data with CREATE/UPDATE/TBA conversion."""
+class ClassProcessor:
+    """Processes class records from standalone data with CREATE/UPDATE."""
 
-    def __init__(self, context: ProcessorContext):
-        super().__init__(context)
-        self._existing_class_lookup = {}
-        self._processed_class_keys: Set = set()
-        self._processed_update_class_ids: Set = set()
+    def __init__(
+        self,
+        raw_data: pd.DataFrame,
+        multiple_lookup: Dict[str, List[dict]],
+        course_lookup: Dict[str, 'CourseDTO'],
+        professor_lookup: Dict[str, str],
+        existing_classes_cache: List[dict],
+        logger: Optional[object] = None
+    ):
+        self._raw_data = raw_data
+        self._multiple_lookup = multiple_lookup
+        self._course_lookup = course_lookup
+        self._professor_lookup = professor_lookup
+        self._existing_classes_cache = existing_classes_cache
+        self._logger = logger
 
-    def _load_cache(self) -> None:
-        # Build existing_class_lookup from existing_classes_cache
-        if hasattr(self.context, 'existing_classes_cache') and self.context.existing_classes_cache:
-            for c in self.context.existing_classes_cache:
-                acad_term_id = c.get('acad_term_id')
-                class_boss_id = c.get('boss_id')
-                professor_id = c.get('professor_id')
-                if acad_term_id and class_boss_id is not None:
-                    key = (acad_term_id, class_boss_id, professor_id)
-                    self._existing_class_lookup[key] = c
+        self._existing_class_lookup: Dict[Tuple, dict] = {}
+        self._processed_class_keys: Set[Tuple] = set()
+        self._new_classes: List['ClassDTO'] = []
+        self._updated_classes: List['ClassDTO'] = []
+        # Track record_key -> [class_ids] mapping for timing processing
+        self._record_key_to_class_ids: Dict[str, List[str]] = {}
 
-    def _do_process(self) -> None:
-        """Execute class processing logic."""
-        self._logger.info("Processing classes with robust CREATE vs. UPDATE logic...")
+    def process(self) -> Tuple[List['ClassDTO'], List['ClassDTO']]:
+        """Execute class processing logic. Returns (new_classes, updated_classes)."""
+        self._build_existing_lookup()
+        self._process_all_rows()
+        return self._new_classes, self._updated_classes
 
-        # Filter data to only the expected academic term
-        filtered_df = self.context.standalone_data
-        if self.context.expected_acad_term_id:
-            original_count = len(filtered_df)
-            filtered_df = filtered_df[filtered_df['acad_term_id'] == self.context.expected_acad_term_id]
-            self._logger.info(f"🔍 Filtered to {len(filtered_df)} records for term {self.context.expected_acad_term_id} (from {original_count} total records)")
+    def get_record_key_to_class_ids_mapping(self) -> Dict[str, List[str]]:
+        """Return the record_key -> [class_ids] mapping built during processing."""
+        return self._record_key_to_class_ids
 
-        for idx, row in filtered_df.iterrows():
+    def _build_existing_lookup(self) -> None:
+        """Build existing_class_lookup from cache for O(1) lookups."""
+        for c in self._existing_classes_cache:
+            acad_term_id = c.get('acad_term_id')
+            boss_id = c.get('boss_id')
+            professor_id = c.get('professor_id')
+            if acad_term_id and boss_id is not None:
+                key = (acad_term_id, boss_id, professor_id)
+                self._existing_class_lookup[key] = c
+
+    def _process_all_rows(self) -> None:
+        """Process all rows in raw_data."""
+        self._logger.info("Processing classes with CREATE vs UPDATE logic...")
+
+        for _, row in self._raw_data.iterrows():
             try:
-                self._process_row(row, idx)
+                self._process_row(row)
             except Exception as e:
-                self._logger.error(f"Exception processing class row {idx}: {e}")
+                self._logger.info(f"Exception processing class row: {e}")
 
-        self._logger.info(f"Class processing complete. New: {self.context.stats['classes_created']}, Updates: {len(self.context.update_classes)}.")
+        self._logger.info(f"Class processing complete. New: {len(self._new_classes)}, Updates: {len(self._updated_classes)}.")
 
-    def _process_row(self, row, idx: int) -> None:
+    def _process_row(self, row: dict) -> None:
         """Process a single row of class data."""
         acad_term_id = row.get('acad_term_id')
         class_boss_id = row.get('class_boss_id')
@@ -60,25 +79,22 @@ class ClassProcessor(AbstractProcessor):
         if pd.isna(acad_term_id) or pd.isna(class_boss_id):
             return
 
-        course_id = self._get_course_id(course_code)
-        if not course_id:
+        course_dto = self._course_lookup.get(course_code)
+        if not course_dto:
             return
 
         record_key = row.get('record_key')
         professor_mappings = self._find_professors_for_class(record_key) if record_key else []
 
-        # Handle TBA class getting a professor assigned
-        self._handle_tba_conversion(row, acad_term_id, class_boss_id, course_id, section, record_key, professor_mappings)
-
-        # If no professors found, create one class with professor_id = None
         if not professor_mappings:
             professor_mappings = [(None, '')]
+        else:
+            # Debug: log when professor is found
+            self._logger.debug(f"_find_professors_for_class({record_key}) -> {professor_mappings}")
 
-        # Check if multi-professor
         is_multi_professor = len(professor_mappings) > 1
         warn_inaccuracy = is_multi_professor
 
-        # Process each professor
         for prof_id, prof_name in professor_mappings:
             class_key = (acad_term_id, class_boss_id, prof_id)
 
@@ -89,127 +105,204 @@ class ClassProcessor(AbstractProcessor):
             existing_class = self._existing_class_lookup.get(class_key)
 
             if existing_class:
-                self._process_update(existing_class, row, record_key, warn_inaccuracy)
+                self._process_update(existing_class, row, section, warn_inaccuracy, record_key, prof_id)
             else:
-                self._process_create(row, acad_term_id, class_boss_id, course_id, section, prof_id, prof_name, record_key, warn_inaccuracy)
+                self._process_create(row, acad_term_id, class_boss_id, course_dto.id, section, prof_id, prof_name, warn_inaccuracy, record_key)
 
-    def _handle_tba_conversion(self, row, acad_term_id, class_boss_id, course_id, section, record_key, professor_mappings) -> None:
-        """Handle TBA class getting professor assigned - converts via UPDATE."""
-        class_rows_in_multiple = [r for r in self.context.multiple_lookup.get(record_key, []) if r.get('type') == 'CLASS']
-
-        if len(professor_mappings) == 1 and len(class_rows_in_multiple) == 1:
-            new_prof_id = professor_mappings[0][0]
-
-            tba_class_to_update = None
-            if hasattr(self.context, 'existing_classes_cache') and self.context.existing_classes_cache:
-                for existing_class in self.context.existing_classes_cache:
-                    if (existing_class.get('course_id') == course_id and
-                        str(existing_class.get('section')) == section and
-                        existing_class.get('acad_term_id') == acad_term_id and
-                        pd.isna(existing_class.get('professor_id'))):
-                        tba_class_to_update = existing_class
-                        break
-
-            if tba_class_to_update and tba_class_to_update['id'] not in self._processed_update_class_ids:
-                self._logger.info(f"Converting TBA class {row.get('course_code')}-{section} to assigned.")
-                self._processed_update_class_ids.add(tba_class_to_update['id'])
-
-                update_record = {
-                    'id': tba_class_to_update['id'],
-                    'professor_id': new_prof_id
-                }
-                self.context.update_classes.append(update_record)
-
-                if record_key:
-                    if record_key not in self.context.class_id_mapping:
-                        self.context.class_id_mapping[record_key] = []
-                    if tba_class_to_update['id'] not in self.context.class_id_mapping[record_key]:
-                        self.context.class_id_mapping[record_key].append(tba_class_to_update['id'])
-
-                new_assigned_key = (acad_term_id, class_boss_id, new_prof_id)
-                old_tba_key = (acad_term_id, class_boss_id, None)
-
-                updated_class_record = tba_class_to_update.copy()
-                updated_class_record['professor_id'] = new_prof_id
-                self._existing_class_lookup[new_assigned_key] = updated_class_record
-
-                if old_tba_key in self._existing_class_lookup:
-                    del self._existing_class_lookup[old_tba_key]
-
-                class_key_for_processing = (acad_term_id, class_boss_id, new_prof_id)
-                self._processed_class_keys.add(class_key_for_processing)
-
-    def _process_update(self, existing_class: Dict, row, record_key: str, warn_inaccuracy: bool) -> None:
+    def _process_update(self, existing_class: dict, row: dict, incoming_section: str, warn_inaccuracy: bool, record_key: str = None, prof_id: Optional[str] = None) -> None:
         """Handle UPDATE case for existing class."""
-        update_record = {'id': existing_class['id']}
         needs_update = False
+        update_data = {'id': existing_class['id']}
+
+        # Check if professor_id needs to be updated
+        # Only update if prof_id is provided and differs from existing
+        if prof_id is not None and prof_id != existing_class.get('professor_id'):
+            update_data['professor_id'] = prof_id
+            needs_update = True
 
         fields_to_check = {
             'grading_basis': row.get('grading_basis') if not pd.isna(row.get('grading_basis')) else None,
             'course_outline_url': row.get('course_outline_url'),
             'boss_id': int(row.get('class_boss_id')) if pd.notna(row.get('class_boss_id')) else None,
-            'warn_inaccuracy': warn_inaccuracy
         }
 
         for field, new_value in fields_to_check.items():
             old_value = existing_class.get(field)
             new_value, old_value, changed = self._compare_values(new_value, old_value)
             if changed:
-                update_record[field] = new_value
+                update_data[field] = new_value
                 needs_update = True
 
+        existing_section = existing_class.get('section')
+        if existing_section != incoming_section:
+            update_data['section'] = incoming_section
+            needs_update = True
+
         if needs_update:
-            self.context.update_classes.append(update_record)
+            now = datetime.now()
+            updated_dto = ClassDTO(
+                id=existing_class['id'],
+                section=update_data.get('section', existing_class.get('section')),
+                course_id=existing_class.get('course_id'),
+                professor_id=update_data.get('professor_id', existing_class.get('professor_id')),
+                acad_term_id=existing_class.get('acad_term_id'),
+                grading_basis=update_data.get('grading_basis', existing_class.get('grading_basis')),
+                course_outline_url=update_data.get('course_outline_url', existing_class.get('course_outline_url')),
+                boss_id=update_data.get('boss_id', existing_class.get('boss_id')),
+                warn_inaccuracy=warn_inaccuracy,
+                created_at=existing_class.get('created_at'),
+                updated_at=now
+            )
+            self._updated_classes.append(updated_dto)
 
-        if record_key:
-            if record_key not in self.context.class_id_mapping:
-                self.context.class_id_mapping[record_key] = []
-            if existing_class['id'] not in self.context.class_id_mapping[record_key]:
-                self.context.class_id_mapping[record_key].append(existing_class['id'])
+        # Map record_key to existing class ID for timing processing
+        if record_key and existing_class.get('id'):
+            if record_key not in self._record_key_to_class_ids:
+                self._record_key_to_class_ids[record_key] = []
+            if existing_class['id'] not in self._record_key_to_class_ids[record_key]:
+                self._record_key_to_class_ids[record_key].append(existing_class['id'])
 
-    def _process_create(self, row, acad_term_id, class_boss_id, course_id, section, prof_id, prof_name, record_key, warn_inaccuracy) -> None:
+    def _process_create(self, row: dict, acad_term_id: str, class_boss_id: int, course_id: str, section: str, prof_id: Optional[str], prof_name: str, warn_inaccuracy: bool, record_key: str = None) -> None:
         """Handle CREATE case for new class."""
-        already_created = False
-        for new_class in self.context.new_classes:
-            if (new_class['acad_term_id'] == acad_term_id and
-                str(new_class.get('boss_id')) == str(class_boss_id) and
-                new_class.get('professor_id') == prof_id):
-                already_created = True
-                if record_key:
-                    if record_key not in self.context.class_id_mapping:
-                        self.context.class_id_mapping[record_key] = []
-                    if new_class['id'] not in self.context.class_id_mapping[record_key]:
-                        self.context.class_id_mapping[record_key].append(new_class['id'])
-                break
+        grading_basis_val = row.get('grading_basis')
+        if pd.isna(grading_basis_val):
+            grading_basis_val = None
 
-        if not already_created:
-            class_id = str(uuid.uuid4())
-            # Safely handle grading_basis - convert NaN to None for enum column
-            grading_basis_val = row.get('grading_basis')
-            if pd.isna(grading_basis_val):
-                grading_basis_val = None
+        now = datetime.now()
 
-            new_class = {
-                'id': class_id,
-                'section': section,
-                'course_id': course_id,
-                'professor_id': prof_id,
-                'acad_term_id': acad_term_id,
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
-                'grading_basis': grading_basis_val,
-                'course_outline_url': row.get('course_outline_url'),
-                'boss_id': int(row.get('class_boss_id')) if pd.notna(row.get('class_boss_id')) else None,
-                'warn_inaccuracy': warn_inaccuracy
-            }
-            self.context.new_classes.append(new_class)
-            self.context.stats['classes_created'] += 1
-            self._existing_class_lookup[(acad_term_id, class_boss_id, prof_id)] = new_class
+        new_dto = ClassDTO(
+            id=str(uuid.uuid4()),
+            section=section,
+            course_id=course_id,
+            professor_id=prof_id,
+            acad_term_id=acad_term_id,
+            grading_basis=grading_basis_val,
+            course_outline_url=row.get('course_outline_url') if pd.notna(row.get('course_outline_url')) else None,
+            boss_id=int(class_boss_id) if class_boss_id is not None else None,
+            warn_inaccuracy=warn_inaccuracy,
+            created_at=now,
+            updated_at=now
+        )
+        self._new_classes.append(new_dto)
 
-            if record_key:
-                if record_key not in self.context.class_id_mapping:
-                    self.context.class_id_mapping[record_key] = []
-                self.context.class_id_mapping[record_key].append(class_id)
+        # Map record_key to new class ID for timing processing
+        if record_key and new_dto.id:
+            if record_key not in self._record_key_to_class_ids:
+                self._record_key_to_class_ids[record_key] = []
+            if new_dto.id not in self._record_key_to_class_ids[record_key]:
+                self._record_key_to_class_ids[record_key].append(new_dto.id)
+
+    def _split_professor_names(self, name: str) -> List[str]:
+        """Split professor names using greedy longest-match-first algorithm.
+
+        Uses professor_lookup to identify known professors. Unknown single-word
+        parts are combined with the previous known professor, not treated as standalone.
+        This handles multi-professor names like "ZHANG WEI, NYDIA REMOLINA LEON, AURELIO GURREA MARTINEZ".
+        """
+        if not name:
+            return []
+
+        name_str = str(name).strip()
+
+        # Quick return: if entire string is a known professor, return as-is
+        if name_str.upper() in self._professor_lookup:
+            return [name_str]
+
+        # No commas means single professor
+        if ',' not in name_str:
+            return [name_str] if name_str else []
+
+        parts = [p.strip() for p in name_str.split(',') if p.strip()]
+
+        found_professors = []
+        i = 0
+
+        while i < len(parts):
+            match_found = False
+
+            # Try longest combination first (greedy matching)
+            for j in range(len(parts), i, -1):
+                candidate = ', '.join(parts[i:j])
+                if candidate.upper() in self._professor_lookup:
+                    found_professors.append(candidate)
+                    i = j
+                    match_found = True
+                    break
+
+            # No match found - handle unknown parts
+            if not match_found:
+                unknown_part = parts[i]
+                if found_professors and len(unknown_part.split()) == 1:
+                    # Single-word unknown: combine with previous professor
+                    found_professors[-1] = f"{found_professors[-1]}, {unknown_part}"
+                else:
+                    # Multi-word unknown: treat as standalone
+                    found_professors.append(unknown_part)
+                i += 1
+
+        return found_professors
+
+    def _find_professors_for_class(self, record_key: str) -> List[Tuple]:
+        """Find professor IDs for a class - uses splitting for multi-professor names."""
+        if not record_key or pd.isna(record_key):
+            return []
+
+        rows = self._multiple_lookup.get(record_key, [])
+        professor_mappings = []
+        seen_professor_ids = set()
+
+        for row in rows:
+            prof_name_raw = row.get('professor_name')
+            if prof_name_raw is None or pd.isna(prof_name_raw):
+                continue
+
+            prof_name = str(prof_name_raw).strip()
+            if not prof_name or prof_name.lower() == 'nan':
+                continue
+
+            # Split multi-professor names (e.g., "ZHANG WEI, NYDIA REMOLINA LEON, AURELIO GURREA MARTINEZ")
+            split_names = self._split_professor_names(prof_name)
+
+            for split_name in split_names:
+                # Try direct lookup first, then variation-based lookup
+                normalized = split_name.upper()
+                prof_id = None
+
+                if normalized in self._professor_lookup:
+                    prof_id = self._professor_lookup[normalized]
+                    self._logger.info(f"DEBUG: DIRECT MATCH '{normalized}' -> {prof_id}")
+                else:
+                    # Try variations (remove commas, normalize spaces, etc.)
+                    variations = [
+                        normalized,
+                        normalized.replace(',', ''),
+                        ' '.join(normalized.replace(',', ' ').split()),
+                        normalized.replace(',', '').replace(' ', ''),
+                    ]
+                    # If no comma in normalized, try inserting comma after first word
+                    # This handles "GOH JING RONG" -> "GOH, JING RONG" lookup
+                    if ',' not in normalized:
+                        parts = normalized.split()
+                        if len(parts) >= 2:
+                            # Try comma after first word: "GOH JING RONG" -> "GOH, JING RONG"
+                            comma_variation = f"{parts[0]}, {' '.join(parts[1:])}"
+                            variations.append(comma_variation)
+                            # Also try after second word if first is short
+                            if len(parts) >= 3:
+                                comma_variation2 = f"{parts[0]} {parts[1]}, {' '.join(parts[2:])}"
+                                variations.append(comma_variation2)
+
+                    for variation in variations:
+                        if variation in self._professor_lookup:
+                            prof_id = self._professor_lookup[variation]
+                            self._logger.info(f"DEBUG: VARIATION MATCH '{normalized}' -> '{variation}' -> {prof_id}")
+                            break
+
+                if prof_id and prof_id not in seen_professor_ids:
+                    professor_mappings.append((prof_id, split_name))
+                    seen_professor_ids.add(prof_id)
+
+        return professor_mappings
 
     def _compare_values(self, new_value, old_value):
         """Compare values handling numpy types."""
@@ -246,145 +339,4 @@ class ClassProcessor(AbstractProcessor):
         except:
             return new_value, old_value, pd.notna(new_value)
 
-    def _get_course_id(self, course_code: str):
-        """Get course ID from course code."""
-        return self.context.courses_cache.get(course_code, {}).get('id')
-
-    def _find_professors_for_class(self, record_key: str) -> List[Tuple]:
-        """Find professor IDs for a class."""
-        if not record_key or pd.isna(record_key):
-            return []
-
-        rows = self.context.multiple_lookup.get(record_key, [])
-        professor_mappings = []
-        seen_professor_ids = set()
-
-        for row in rows:
-            prof_name_raw = row.get('professor_name')
-            if prof_name_raw is None or pd.isna(prof_name_raw):
-                continue
-            original_prof_name = str(prof_name_raw).strip()
-            if not original_prof_name or original_prof_name.lower() == 'nan':
-                continue
-
-            split_professors = self._split_professor_names(original_prof_name)
-            for prof_name in split_professors:
-                if prof_name and prof_name.strip():
-                    prof_id = self._lookup_professor_with_fallback(prof_name.strip())
-                    if prof_id and prof_id not in seen_professor_ids:
-                        professor_mappings.append((prof_id, prof_name.strip()))
-                        seen_professor_ids.add(prof_id)
-
-        return professor_mappings
-
-    def _split_professor_names(self, prof_name: str) -> List[str]:
-        """Split professor names using greedy longest-match-first."""
-        if not prof_name or not str(prof_name).strip():
-            return []
-
-        prof_name_str = str(prof_name).strip()
-        if prof_name_str.upper() in self.context.professor_lookup:
-            return [prof_name_str]
-
-        if ',' not in prof_name_str:
-            return [prof_name_str]
-
-        parts = [p.strip() for p in prof_name_str.split(',') if p.strip()]
-        found_professors = []
-        i = 0
-
-        while i < len(parts):
-            match_found = False
-            for j in range(len(parts), i, -1):
-                candidate = ', '.join(parts[i:j])
-                if candidate.upper() in self.context.professor_lookup:
-                    found_professors.append(candidate)
-                    i = j
-                    match_found = True
-                    break
-
-            if not match_found:
-                unknown_part = parts[i]
-                if found_professors and len(unknown_part.split()) == 1:
-                    found_professors[-1] = f"{found_professors[-1]}, {unknown_part}"
-                else:
-                    found_professors.append(unknown_part)
-                i += 1
-
-        return found_professors
-
-    def _lookup_professor_with_fallback(self, prof_name: str):
-        """
-        Look up professor by name using V4's 6-strategy fallback chain.
-        Returns professor_id or None if not found.
-        """
-        if not prof_name:
-            return None
-
-        import json as json_module
-        search_name = prof_name.strip().upper()
-
-        # Strategy 1 & 2: Direct exact match + variation-based lookup
-        for variant in self._get_name_variations(search_name):
-            if variant in self.context.professor_lookup:
-                return self.context.professor_lookup[variant].get('database_id')
-
-        # Strategy 3: Search boss_aliases in professors_cache
-        for boss_name_key, prof_data in self.context.professors_cache.items():
-            aliases = prof_data.get('boss_aliases', '[]')
-            if isinstance(aliases, str):
-                try:
-                    aliases = json_module.loads(aliases)
-                except (json_module.JSONDecodeError, TypeError):
-                    aliases = []
-            if search_name in aliases:
-                return prof_data.get('id')  # Use actual ID from prof_data, not the dict key
-
-        # Strategy 4: Partial word matching
-        search_words = set(search_name.split())
-        if search_words:
-            for boss_name_key, prof_data in self.context.professors_cache.items():
-                name_words = set(prof_data.get('name', '').upper().split())
-                if name_words.issuperset(search_words):
-                    return prof_data.get('id')
-
-        # Strategy 5: Check new_professors list (professors created this run)
-        for new_prof in self.context.new_professors:
-            if new_prof.get('name', '').upper() == search_name:
-                return new_prof.get('id')
-            boss_aliases = new_prof.get('boss_aliases', '[]')
-            if isinstance(boss_aliases, str):
-                try:
-                    boss_aliases = json_module.loads(boss_aliases)
-                except (json_module.JSONDecodeError, TypeError):
-                    boss_aliases = []
-            if search_name in boss_aliases:
-                return new_prof.get('id')
-
-        # Strategy 6: Fuzzy exact matching via professor_lookup
-        for lookup_key, lookup_data in self.context.professor_lookup.items():
-            if self._names_match_fuzzy_exact(search_name, lookup_key):
-                return lookup_data.get('database_id')
-
-        return None  # Not found
-
-    def _get_name_variations(self, name: str) -> list:
-        """Generate variations of a name for lookup."""
-        variations = [name]
-        # Strip commas
-        variations.append(name.replace(',', '').replace(',', ''))
-        # Normalize whitespace
-        variations.append(' '.join(name.split()))
-        return variations
-
-    def _names_match_fuzzy_exact(self, name1: str, name2: str) -> bool:
-        """Check if two names match exactly after normalization."""
-        n1 = name1.replace(',', '').replace('.', '').upper()
-        n2 = name2.replace(',', '').replace('.', '').upper()
-        return n1 == n2
-
-    def _collect_results(self) -> None:
-        pass
-
-    def _persist(self) -> None:
-        pass
+    

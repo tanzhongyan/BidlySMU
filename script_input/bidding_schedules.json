@@ -1,0 +1,65 @@
+{
+  "2025-26_T1": [
+    ["2025-07-09T14:00:00", "Round 1 Window 1", "R1W1"],
+    ["2025-07-11T14:00:00", "Round 1A Window 1", "R1AW1"],
+    ["2025-07-14T14:00:00", "Round 1A Window 2", "R1AW2"],
+    ["2025-07-16T14:00:00", "Round 1A Window 3", "R1AW3"],
+    ["2025-07-18T14:00:00", "Round 1B Window 1", "R1BW1"],
+    ["2025-07-21T14:00:00", "Round 1B Window 2", "R1BW2"],
+    ["2025-07-30T14:00:00", "Incoming Exchange Rnd 1C Win 1", "R1CW1"],
+    ["2025-07-31T14:00:00", "Incoming Exchange Rnd 1C Win 2", "R1CW2"],
+    ["2025-08-01T14:00:00", "Incoming Exchange Rnd 1C Win 3", "R1CW3"],
+    ["2025-08-11T14:00:00", "Incoming Freshmen Rnd 1 Win 1", "R1FW1"],
+    ["2025-08-12T14:00:00", "Incoming Freshmen Rnd 1 Win 2", "R1FW2"],
+    ["2025-08-13T14:00:00", "Incoming Freshmen Rnd 1 Win 3", "R1FW3"],
+    ["2025-08-14T14:00:00", "Incoming Freshmen Rnd 1 Win 4", "R1FW4"],
+    ["2025-08-20T14:00:00", "Round 2 Window 1", "R2W1"],
+    ["2025-08-22T14:00:00", "Round 2 Window 2", "R2W2"],
+    ["2025-08-25T14:00:00", "Round 2 Window 3", "R2W3"],
+    ["2025-08-27T14:00:00", "Round 2A Window 1", "R2AW1"],
+    ["2025-08-29T14:00:00", "Round 2A Window 2", "R2AW2"],
+    ["2025-09-01T14:00:00", "Round 2A Window 3", "R2AW3"]
+  ],
+  "2025-26_T2": [
+    ["2025-10-31T14:00:00", "Round 1 Window 1", "R1W1"],
+    ["2025-11-03T14:00:00", "Round 1A Window 1", "R1AW1"],
+    ["2025-11-05T14:00:00", "Round 1A Window 2", "R1AW2"],
+    ["2025-11-07T14:00:00", "Round 1A Window 3", "R1AW3"],
+    ["2025-11-10T14:00:00", "Round 1B Window 1", "R1BW1"],
+    ["2025-11-12T14:00:00", "Round 1B Window 2", "R1BW2"],
+    ["2025-12-10T14:00:00", "Incoming Exchange Rnd 1C Win 1", "R1CW1"],
+    ["2025-12-11T14:00:00", "Incoming Exchange Rnd 1C Win 2", "R1CW2"],
+    ["2025-12-12T14:00:00", "Incoming Exchange Rnd 1C Win 3", "R1CW3"],
+    ["2026-01-14T14:00:00", "Round 2 Window 1", "R2W1"],
+    ["2026-01-16T14:00:00", "Round 2 Window 2", "R2W2"],
+    ["2026-01-19T14:00:00", "Round 2 Window 3", "R2W3"],
+    ["2026-01-21T14:00:00", "Round 2A Window 1", "R2AW1"],
+    ["2026-01-23T14:00:00", "Round 2A Window 2", "R2AW2"],
+    ["2026-01-26T14:00:00", "Round 2A Window 3", "R2AW3"]
+  ],
+  "2025-26_T3A": [
+    ["2026-03-30T14:00:00", "Round 1 Window 1", "R1W1"],
+    ["2026-03-31T14:00:00", "Round 1 Window 2", "R1W2"],
+    ["2026-04-01T14:00:00", "Round 1 Window 3", "R1W3"],
+    ["2026-04-02T14:00:00", "Round 1 Window 4", "R1W4"],
+    ["2026-05-05T14:00:00", "Round 2 Window 1", "R2W1"],
+    ["2026-05-06T14:00:00", "Round 2 Window 2", "R2W2"]
+  ],
+  "2025-26_T3B": [
+    ["2026-03-30T14:00:00", "Round 1 Window 1", "R1W1"],
+    ["2026-03-31T14:00:00", "Round 1 Window 2", "R1W2"],
+    ["2026-04-01T14:00:00", "Round 1 Window 3", "R1W3"],
+    ["2026-04-02T14:00:00", "Round 1 Window 4", "R1W4"],
+    ["2026-05-05T14:00:00", "Round 2 Window 1", "R2W1"],
+    ["2026-05-06T14:00:00", "Round 2 Window 2", "R2W2"],
+    ["2026-06-23T14:00:00", "Round 2 Window 3", "R2W3"],
+    ["2026-06-24T14:00:00", "Round 2 Window 4", "R2W4"]
+  ],
+  "2026-27_T1": [
+    ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1"],
+    ["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"],
+    ["2026-07-13T14:00:00", "Round 1A Window 2", "R1AW2"],
+    ["2026-07-17T14:00:00", "Round 1B Window 1", "R1BW1"],
+    ["2026-07-20T14:00:00", "Round 1B Window 2", "R1BW2"]
+  ]
+}

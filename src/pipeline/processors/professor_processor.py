@@ -10,7 +10,6 @@ import uuid
 import time
 import logging
 import pandas as pd
-from google import genai
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Set
 
@@ -261,6 +260,7 @@ class ProfessorProcessor(AbstractProcessor):
 
     def _call_llm_batch(self, names: List[str]) -> Dict[str, Tuple[str, str]]:
         """Call LLM to normalize a batch of names."""
+        from google import genai
         normalized_map = {}
         total_batches = (len(names) + self._llm_batch_size - 1) // self._llm_batch_size
 
@@ -653,19 +653,56 @@ class ProfessorProcessor(AbstractProcessor):
         return unique_professors, dict(professor_variations)
 
     def _split_professor_names(self, name: str) -> List[str]:
-        """Split professor names separated by comma.
+        """Split professor names using greedy longest-match-first algorithm.
 
-        Only splits if the part after comma is a single word (likely an initial/surname).
-        Multi-word parts after comma are kept intact as they represent full names.
+        Uses professor_lookup to identify known professors. Unknown single-word
+        parts are combined with the previous known professor, not treated as standalone.
+        This prevents single-word names like "Hara" from becoming separate professors.
         """
         if not name:
             return []
-        parts = name.split(',')
-        if len(parts) == 2:
-            second_part = parts[1].strip()
-            # Only split if second part is single word (like a surname/initials)
-            # Multi-word second part means it's a full name that should be kept intact
-            if len(second_part.split()) == 1:
-                return [p.strip() for p in parts if p.strip()]
-        # No split needed or multi-word second part - return original
-        return [name.strip()] if name.strip() else []
+
+        name_str = str(name).strip()
+
+        # Quick return: if entire string is a known professor, return as-is
+        # This handles comma-containing names like "LEE, MICHELLE PUI YEE"
+        if name_str.upper() in self._professor_lookup:
+            return [name_str]
+
+        # No commas means single professor
+        if ',' not in name_str:
+            return [name_str] if name_str else []
+
+        parts = [p.strip() for p in name_str.split(',') if p.strip()]
+
+        found_professors = []
+        i = 0
+
+        while i < len(parts):
+            match_found = False
+
+            # Try longest combination first (greedy matching)
+            for j in range(len(parts), i, -1):
+                candidate = ', '.join(parts[i:j])
+                if candidate.upper() in self._professor_lookup:
+                    found_professors.append(candidate)
+                    i = j
+                    match_found = True
+                    break
+
+            # No match found - handle unknown parts
+            if not match_found:
+                unknown_part = parts[i]
+
+                # KEY CONSTRAINT: Single-word unknown parts COMBINE with previous professor
+                # This prevents standalone single-word names like "Hara" or "Eileen"
+                if found_professors and len(unknown_part.split()) == 1:
+                    found_professors[-1] = f"{found_professors[-1]}, {unknown_part}"
+                    self._logger.info(f"Combined unknown single word '{unknown_part}' with previous professor -> '{found_professors[-1]}'")
+                else:
+                    # Multi-word unknown or no previous professor -> standalone
+                    found_professors.append(unknown_part)
+
+                i += 1
+
+        return found_professors

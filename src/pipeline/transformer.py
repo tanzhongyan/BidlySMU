@@ -1,11 +1,10 @@
 import pandas as pd
 import numpy as np
 import json
-from typing import List
 import re
 from pathlib import Path
 
-from src.parser.bidding_window_parser import parse_bidding_window
+from src.config import parse_bidding_window
 from src.logging.logger import get_logger
 
 class SMUBiddingTransformer:
@@ -140,15 +139,19 @@ class SMUBiddingTransformer:
         """Fit the transformer and transform the data in one step."""
         self.fit(df)
         return self.transform(df)
-    
-    def get_categorical_features(self) -> List[str]:
+
+    def get_categorical_features(self) -> list:
         """Get list of categorical feature names for CatBoost."""
         return self.categorical_features.copy()
-    
-    def get_numeric_features(self) -> List[str]:
+
+    def get_numeric_features(self) -> list:
         """Get list of numeric feature names."""
         return self.numeric_features.copy()
-    
+
+    def get_feature_names(self) -> list:
+        """Get all feature names after transformation."""
+        return self.categorical_features + self.numeric_features
+
     def _extract_course_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Extract subject area and catalogue number from course code."""
         features = pd.DataFrame(index=df.index)
@@ -291,16 +294,9 @@ class SMUBiddingTransformer:
         
         # These are numeric binary features (0/1)
         self.numeric_features.extend(day_columns)
-        
+
         return features
 
-    def get_feature_names(self) -> List[str]:
-        """Get all feature names after transformation."""
-        if not self.is_fitted:
-            raise ValueError("Transformer must be fitted to get feature names.")
-        
-        return self.categorical_features + self.numeric_features
-    
     def _process_instructor_names(self, instructor_input):
         """Process instructor names to ensure consistent JSON array format as categorical string."""
         # Handle list/array input

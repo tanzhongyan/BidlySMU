@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from src.pipeline.processors.abstract_processor import AbstractProcessor
-from src.parser.bidding_window_parser import parse_bidding_window
+from src.config import parse_bidding_window
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 
 
@@ -49,7 +49,9 @@ class BidWindowProcessor(AbstractProcessor):
 
         # Determine starting ID for new windows
         max_id = 0
-        for bid_window_id in self._bid_window_cache.values():
+        for bid_window_entry in self._bid_window_cache.values():
+            # bid_window_entry may be int (old format) or dict (new format)
+            bid_window_id = bid_window_entry.get('id') if isinstance(bid_window_entry, dict) else bid_window_entry
             if isinstance(bid_window_id, int) and bid_window_id > max_id:
                 max_id = bid_window_id
         next_bid_window_id = max_id + 1
@@ -81,7 +83,13 @@ class BidWindowProcessor(AbstractProcessor):
                     window=window_num
                 )
                 results_new.append(dto)
-                self._bid_window_cache[window_key] = next_bid_window_id
+                # Store as dict for consistency with _convert_caches_to_dicts format
+                self._bid_window_cache[window_key] = {
+                    'id': next_bid_window_id,
+                    'acad_term_id': acad_term_id,
+                    'round': round_str,
+                    'window': window_num
+                }
 
                 self._logger.info(f"Created bid_window {next_bid_window_id}: {acad_term_id} Round {round_str} Window {window_num}")
                 next_bid_window_id += 1

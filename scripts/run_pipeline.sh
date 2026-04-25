@@ -7,20 +7,21 @@ export PYTHONIOENCODING=utf-8
 # ==============================================================================
 # SMU Bidding Data Pipeline Orchestrator
 # ==============================================================================
-# This script runs the data processing pipeline (Steps 2 & 3).
+# This script runs the data processing pipeline (Step 2 only).
 # Step 1 (scraping) is commented out as it requires Chrome/chromedriver.
 #
 # Execution Flow:
 # 1. Step 1 (scraping): DISABLED - requires Chrome
-# 2. Step 2 runs: TableBuilderCoordinator (professors, courses, classes, timings, bid windows)
-# 3. Step 3 runs: BidPredictorCoordinator (predictions and database upserts)
+# 2. Step 2 runs: PipelineCoordinator
+#    - Phase 1: acad_term, courses, professors, bid_windows
+#    - Phase 2: classes, timings, availability, bid_results
+#    - Phase 3: bid_predictions (with safety_factors)
 #
 # All output is redirected to timestamped log files in the 'logs/' directory.
 # If any step fails, the script will exit immediately.
 #
-# Coordinators:
-# - TableBuilderCoordinator in src/pipeline/table_builder.py
-# - BidPredictorCoordinator in src/pipeline/bid_predictor.py
+# Coordinator:
+# - PipelineCoordinator in src/pipeline/pipeline_coordinator.py
 #
 # Note: Step 1 (scraping) requires Chrome/chromedriver and is disabled by default.
 # To enable, uncomment the Step 1 section below.
@@ -74,56 +75,58 @@ echo "------------------------------------------------------------"
 
 
 # --- Step 2: Table Building (Direct Coordinator Call) ---
-echo " Kicking off Step 2: TableBuilderCoordinator..."
+echo " Kicking off Step 2: PipelineCoordinator..."
+
+# Generate log filename via Python (combines ACAD_TERM_ID and window code)
+LOG_FILENAME=$(python -c "
+from src.config import ACAD_TERM_ID, CURRENT_WINDOW_NAME
+import re
+
+def window_to_code(name):
+    if not name:
+        return 'UNKNOWN'
+    m = re.search(r'Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)', name, re.IGNORECASE)
+    if m:
+        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
+    m = re.search(r'[Rr]nd\s+(\d+)([A-C]?)\s+[Ww]in\s+(\d+)', name)
+    if m:
+        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
+    m = re.search(r'Incoming\s+(Freshmen|Exchange)', name, re.IGNORECASE)
+    if m:
+        suffix = 'F' if m.group(1).lower() == 'freshmen' else ''
+        m2 = re.search(r'Rnd\s+(\d+)', name)
+        m3 = re.search(r'Win\s+(\d+)', name)
+        if m2 and m3:
+            return f'R{m2.group(1)}{suffix}W{m3.group(1)}'
+    return 'UNKNOWN'
+
+from datetime import datetime
+ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+wc = window_to_code(CURRENT_WINDOW_NAME)
+print(f'{ACAD_TERM_ID}_{wc}_{ts}.log')
+")
+
 python -c "
 import sys
-from src.config import BIDDING_SCHEDULES, START_AY_TERM
-from src.pipeline.table_builder import TableBuilderCoordinator, TableBuilderConfig
-from src.logging.logger import get_logger
+from src.config import BIDDING_SCHEDULES, START_AY_TERM, DB_CONFIG, PipelineConfig
+from src.pipeline.pipeline_coordinator import PipelineCoordinator
 
-logger = get_logger(__name__)
-config = TableBuilderConfig.from_env(
+config = PipelineConfig.from_env(
     bidding_schedules=BIDDING_SCHEDULES,
-    start_ay_term=START_AY_TERM
+    start_ay_term=START_AY_TERM,
+    db_config=DB_CONFIG
 )
-coordinator = TableBuilderCoordinator(config=config, logger=logger)
+coordinator = PipelineCoordinator(config=config)
 coordinator.run()
-" > logs/step_2_TableBuilder_${TIMESTAMP}.log 2>&1
+" 2>&1 | tee "script_output/${LOG_FILENAME}"
 
 if [ $? -ne 0 ]; then
-    echo "❌ ERROR: TableBuilderCoordinator failed. Halting pipeline."
-    echo "   - Check logs/step_2_TableBuilder_${TIMESTAMP}.log for details."
+    echo "❌ ERROR: PipelineCoordinator failed. Halting pipeline."
+    echo "   - Check script_output/${LOG_FILENAME} for details."
     exit 1
 fi
 
 echo "✅ Step 2 completed successfully."
-echo "------------------------------------------------------------"
-
-
-# --- Step 3: Bid Prediction (Direct Coordinator Call) ---
-echo " Kicking off Step 3: BidPredictorCoordinator..."
-python -c "
-import sys
-from src.config import BIDDING_SCHEDULES, START_AY_TERM
-from src.pipeline.bid_predictor import BidPredictorCoordinator, BidPredictorConfig
-from src.logging.logger import get_logger
-
-logger = get_logger(__name__)
-config = BidPredictorConfig.from_env(
-    bidding_schedules=BIDDING_SCHEDULES,
-    start_ay_term=START_AY_TERM
-)
-coordinator = BidPredictorCoordinator(config=config, logger=logger)
-coordinator.run()
-" > logs/step_3_BidPrediction_${TIMESTAMP}.log 2>&1
-
-if [ $? -ne 0 ]; then
-    echo "❌ ERROR: BidPredictorCoordinator failed. Halting pipeline."
-    echo "   - Check logs/step_3_BidPrediction_${TIMESTAMP}.log for details."
-    exit 1
-fi
-
-echo "✅ Step 3 completed successfully."
 echo "============================================================"
 echo "🎉 SMU Data Pipeline finished successfully at $(date)"
 echo "============================================================"
