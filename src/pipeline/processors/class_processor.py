@@ -38,8 +38,12 @@ class ClassProcessor:
         self._existing_classes_by_group: Dict[Tuple[str, int], List[dict]] = {}
         # {(acad_term_id, boss_id): [(prof_id, prof_name), ...]}
         self._incoming_state_by_group: Dict[Tuple[str, int], List[Tuple[Optional[str], str]]] = {}
+        # {(acad_term_id, boss_id): set(prof_ids)} - dedup tracker for incoming state
+        self._incoming_prof_ids_by_group: Dict[Tuple[str, int], Set[Optional[str]]] = {}
         # {(acad_term_id, boss_id)} - groups with multi-professor classes
         self._multi_professor_groups: Set[Tuple[str, int]] = set()
+        # {(acad_term_id, boss_id): row} - pre-built index for O(1) row lookup
+        self._raw_data_by_group: Dict[Tuple[str, int], dict] = {}
         # Classes that should be soft-deactivated (excess old records)
         self._classes_to_deactivate: List[dict] = []
 
@@ -95,8 +99,7 @@ class ClassProcessor:
     # ============================================================================
 
     def _build_incoming_state(self) -> None:
-        """Build incoming state map and identify multi-professor groups."""
-        # First pass: identify multi-professor groups and build raw state
+        """Build incoming state map, raw_data index, and identify multi-professor groups."""
         for _, row in self._raw_data.iterrows():
             acad_term_id = row.get('acad_term_id')
             class_boss_id = row.get('class_boss_id')
@@ -105,27 +108,35 @@ class ClassProcessor:
             if pd.isna(acad_term_id) or pd.isna(class_boss_id) or not record_key:
                 continue
 
+            group_key = (acad_term_id, int(class_boss_id))
+
+            # Build raw_data index for O(1) lookup during reconciliation
+            if group_key not in self._raw_data_by_group:
+                self._raw_data_by_group[group_key] = row
+
             professor_mappings = self._professor_resolution_service.resolve_professor_ids(
                 record_key,
                 self._multiple_lookup.get(record_key, [])
             ) if record_key else []
 
-            group_key = (acad_term_id, int(class_boss_id))
-
             # Check for multi-professor
             if len(professor_mappings) > 1:
                 self._multi_professor_groups.add(group_key)
 
-            # Store incoming state
+            # Store incoming state (deduplicate by professor_id within group)
             if group_key not in self._incoming_state_by_group:
                 self._incoming_state_by_group[group_key] = []
+                self._incoming_prof_ids_by_group[group_key] = set()
 
-            # Add professor mappings (or TBA if empty)
+            # Add professor mappings (or TBA if empty), skipping duplicates
             if professor_mappings:
                 for prof_id, prof_name in professor_mappings:
-                    self._incoming_state_by_group[group_key].append((prof_id, prof_name))
-            else:
+                    if prof_id not in self._incoming_prof_ids_by_group[group_key]:
+                        self._incoming_state_by_group[group_key].append((prof_id, prof_name))
+                        self._incoming_prof_ids_by_group[group_key].add(prof_id)
+            elif None not in self._incoming_prof_ids_by_group[group_key]:
                 self._incoming_state_by_group[group_key].append((None, ''))
+                self._incoming_prof_ids_by_group[group_key].add(None)
 
         self._logger.info(f"Built incoming state: {len(self._incoming_state_by_group)} groups, {len(self._multi_professor_groups)} multi-professor groups")
 
@@ -134,11 +145,13 @@ class ClassProcessor:
     # ============================================================================
 
     def _reconcile_all_groups(self) -> None:
-        """Reconcile existing vs incoming state for each group."""
-        # Get union of all group keys
-        all_group_keys = set(self._existing_classes_by_group.keys()) | set(self._incoming_state_by_group.keys())
+        """Reconcile existing vs incoming state for each group.
 
-        for group_key in all_group_keys:
+        Only iterates over groups with incoming data. Existing-only groups
+        (no raw_data) are left untouched per design — they belong to previous
+        terms that aren't being processed this run.
+        """
+        for group_key in self._incoming_state_by_group:
             existing_classes = self._existing_classes_by_group.get(group_key, [])
             incoming_profs = self._incoming_state_by_group.get(group_key, [])
 
@@ -180,8 +193,13 @@ class ClassProcessor:
         # Track which existing classes we've matched to avoid reuse
         matched_existing_ids: Set[str] = set()
 
+        # Handle empty incoming state: if no professors, treat as TBA (single None entry)
+        # This ensures 1 existing class is repurposed with professor_id=None rather than
+        # all being marked for deactivation (handles N→0 professor transitions).
+        working_incoming_profs = incoming_profs if incoming_profs else [(None, '')]
+
         # Process incoming professors in order
-        for idx, (prof_id, prof_name) in enumerate(incoming_profs):
+        for idx, (prof_id, prof_name) in enumerate(working_incoming_profs):
             existing_class = existing_by_prof.get(prof_id)
 
             if existing_class and existing_class['id'] not in matched_existing_ids:
@@ -248,12 +266,8 @@ class ClassProcessor:
                 )
 
     def _get_sample_row_for_group(self, acad_term_id: str, boss_id: int) -> Optional[dict]:
-        """Get a sample row from raw_data for this group to extract context."""
-        for _, row in self._raw_data.iterrows():
-            if (row.get('acad_term_id') == acad_term_id and
-                row.get('class_boss_id') == boss_id):
-                return row
-        return None
+        """Get a sample row from pre-built index for O(1) lookup."""
+        return self._raw_data_by_group.get((acad_term_id, boss_id))
 
     def _process_update(self, existing_class: dict, row: dict, incoming_section: str, warn_inaccuracy: bool, record_key: str = None, prof_id: Optional[str] = None) -> None:
         """Handle UPDATE case for existing class."""

@@ -6,6 +6,7 @@ import os
 import csv
 import pandas as pd
 import pickle
+from datetime import datetime
 from typing import List
 
 from src.logging.logger import get_logger
@@ -302,6 +303,30 @@ class PipelineCoordinator:
         )
         classes_new, classes_updated = class_processor.process()
         self.results['classes'] = {'new': classes_new, 'updated': classes_updated}
+
+        # Process class deactivations (excess classes → set professor_id=None)
+        classes_to_deactivate = class_processor.get_classes_to_deactivate()
+        if classes_to_deactivate:
+            self._logger.info(f"Processing {len(classes_to_deactivate)} class deactivations")
+            from src.pipeline.dtos.class_dto import ClassDTO
+            for c in classes_to_deactivate:
+                if c.get('professor_id') is not None:
+                    deactivated_dto = ClassDTO(
+                        id=c['id'],
+                        section=c.get('section', ''),
+                        course_id=c.get('course_id', ''),
+                        professor_id=None,
+                        acad_term_id=c.get('acad_term_id', ''),
+                        grading_basis=c.get('grading_basis'),
+                        course_outline_url=c.get('course_outline_url'),
+                        boss_id=int(c['boss_id']) if c.get('boss_id') is not None else None,
+                        warn_inaccuracy=c.get('warn_inaccuracy', False),
+                        created_at=c.get('created_at'),
+                        updated_at=datetime.now()
+                    )
+                    classes_updated.append(deactivated_dto)
+            self._logger.info(f"✅ Deactivated {len(classes_to_deactivate)} excess class records")
+
         self.results['class_lookup'] = self._build_class_lookup()
         self._logger.info(f"✅ Processed classes: {len(classes_new)} new, {len(classes_updated)} updated")
 
@@ -509,9 +534,41 @@ class PipelineCoordinator:
                 multiple_lookup[record_key].append(row.to_dict())
         return multiple_lookup
 
+    def _dict_to_class_dto(self, item: dict):
+        """Create a ClassDTO from a dict (e.g., from database cache)."""
+        from src.pipeline.dtos.class_dto import ClassDTO
+
+        return ClassDTO(
+            id=item.get('id'),
+            section=item.get('section', ''),
+            course_id=item.get('course_id', ''),
+            professor_id=item.get('professor_id'),
+            acad_term_id=item.get('acad_term_id', ''),
+            grading_basis=item.get('grading_basis'),
+            course_outline_url=item.get('course_outline_url'),
+            boss_id=int(item.get('boss_id')) if item.get('boss_id') is not None else None,
+            warn_inaccuracy=item.get('warn_inaccuracy', False),
+            created_at=item.get('created_at'),
+            updated_at=item.get('updated_at')
+        )
+
     def _build_class_lookup(self) -> dict:
-        """Build composite class lookup: (acad_term_id, boss_id, professor_id) -> ClassDTO."""
+        """Build composite class lookup: (acad_term_id, boss_id, professor_id) -> ClassDTO.
+
+        Includes existing classes from DB cache first, then new/updated DTOs (which override
+        cache entries with the same key). This ensures downstream processors can find ALL
+        classes, not just those created or updated this run.
+        """
         lookup = {}
+        # Add existing classes from DB cache first
+        classes_cache = self.db_cache.get('classes', {})
+        if isinstance(classes_cache, dict):
+            for key, item in classes_cache.items():
+                dto = self._dict_to_class_dto(item) if isinstance(item, dict) else item
+                if dto and hasattr(dto, 'acad_term_id'):
+                    lookup_key = (dto.acad_term_id, dto.boss_id, dto.professor_id)
+                    lookup[lookup_key] = dto
+        # Then add new/updated DTOs (override cache entries if same key)
         for dto in self.results.get('classes', {}).get('new', []) + \
                   self.results.get('classes', {}).get('updated', []):
             key = (dto.acad_term_id, dto.boss_id, dto.professor_id)

@@ -156,21 +156,26 @@ class ProfessorResolutionService:
                 self._new_professor_ids[alias_upper] = prof_id
 
         # Add updated_professors (session-updated)
+        # Only add NEW aliases/entries — do NOT overwrite existing _direct_lookup
+        # entries, since they already have the correct DB professor_id.
         for dto in updated_professors:
             prof_id = dto.id
             boss_name_upper = dto.name.upper()
 
-            self._direct_lookup[boss_name_upper] = prof_id
-            self._full_lookup[boss_name_upper] = {
-                'database_id': prof_id,
-                'boss_name': boss_name_upper,
-                'afterclass_name': dto.name
-            }
+            # Only update full_lookup if not already present
+            if boss_name_upper not in self._full_lookup:
+                self._full_lookup[boss_name_upper] = {
+                    'database_id': prof_id,
+                    'boss_name': boss_name_upper,
+                    'afterclass_name': dto.name
+                }
 
             for alias in dto.boss_aliases:
                 alias_upper = alias.upper()
-                self._direct_lookup[alias_upper] = prof_id
-                self._boss_alias_lookup[alias_upper] = boss_name_upper
+                # Only add alias if not already in direct_lookup (preserve existing correct mapping)
+                if alias_upper not in self._direct_lookup:
+                    self._direct_lookup[alias_upper] = prof_id
+                    self._boss_alias_lookup[alias_upper] = boss_name_upper
 
     def update_with_professor_lookup(self, professor_lookup: Dict[str, Dict]) -> None:
         """Merge an external professor_lookup dictionary into our direct_lookup.
@@ -251,7 +256,10 @@ class ProfessorResolutionService:
         return professor_mappings
 
     def _is_valid_professor_id(self, professor_id: str) -> bool:
-        """Check if a professor ID exists in the valid set from the database."""
+        """Check if a professor ID is valid (exists in DB or was created this session)."""
+        # Session-created professors are always valid
+        if professor_id in self._new_professor_ids.values():
+            return True
         if not self._valid_professor_ids:
             # If no validation set provided, accept all IDs
             return True

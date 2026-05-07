@@ -22,7 +22,8 @@ class ProfessorDTO:
         'profile_url': 'profile_url',
         'belong_to_university': 'belong_to_university',
         'boss_aliases': 'boss_aliases',
-        'original_scraped_name': 'original_scraped_name'
+        'original_scraped_name': 'original_scraped_name',
+        'updated_at': 'updated_at'
     }
 
     # Default values
@@ -54,10 +55,9 @@ class ProfessorDTO:
             'profile_url': self.profile_url,
             'belong_to_university': self.belong_to_university,
             'boss_aliases': json.dumps(self.boss_aliases),
-            'original_scraped_name': self.original_scraped_name
+            'original_scraped_name': self.original_scraped_name,
+            'updated_at': self.updated_at
         }
-        if self.updated_at:
-            row['updated_at'] = self.updated_at
         return row
 
     def to_db_row(self) -> dict:
@@ -87,7 +87,7 @@ class ProfessorDTO:
             boss_aliases = boss_aliases_raw or []
 
         return ProfessorDTO(
-            id=str(uuid.uuid4()),
+            id=row.get('id') or str(uuid.uuid4()),
             name=row.get('name', ''),
             email=row.get('email', ProfessorDTO.DEFAULT_EMAIL),
             slug=row.get('slug', ''),

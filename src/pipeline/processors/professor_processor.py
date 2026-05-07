@@ -167,7 +167,22 @@ class ProfessorProcessor(AbstractProcessor):
 
             if aliases_str.startswith('{') and aliases_str.endswith('}'):
                 content = aliases_str[1:-1]
-                return [ProfessorProcessor._clean_alias(item.strip().strip('"')) for item in content.split(',') if item.strip()]
+                # Quote-aware split: PostgreSQL arrays use {"A, B", "C"} format
+                # where commas inside quotes are part of the value, not delimiters
+                items = []
+                current = []
+                in_quotes = False
+                for char in content:
+                    if char == '"':
+                        in_quotes = not in_quotes
+                    elif char == ',' and not in_quotes:
+                        items.append(''.join(current))
+                        current = []
+                    else:
+                        current.append(char)
+                if current:
+                    items.append(''.join(current))
+                return [ProfessorProcessor._clean_alias(item.strip().strip('"')) for item in items if item.strip()]
 
             if aliases_str.startswith('[') and aliases_str.endswith(']'):
                 try:
@@ -199,6 +214,7 @@ class ProfessorProcessor(AbstractProcessor):
         self._llm_batch_size = self._LLM_BATCH_SIZE
         self._llm_prompt = None
         self._new_professors_dtos: List[ProfessorDTO] = []  # Session deduplication
+        self._results_updated: List[ProfessorDTO] = []  # Updated professor DTOs from process()
         # Build set of valid professor IDs from DB cache for validation
         self._valid_professor_ids = {str(p['id']) for p in professors_cache.values() if 'id' in p}
         # Resolution service built early (with DB cache) and updated with session professors at end of process()
@@ -237,6 +253,7 @@ class ProfessorProcessor(AbstractProcessor):
         )
 
         # Step 5: Save updated lookup to CSV (for human reference only)
+        self._results_updated = results_updated
         self._save_professor_lookup_csv()
 
         self._logger.info(f"Professor processing complete: {len(results_new)} new, {len(results_updated)} updated")
@@ -725,20 +742,42 @@ class ProfessorProcessor(AbstractProcessor):
 
         CSV is saved to script_output/professor_lookup.csv - NOT used for processing,
         only for human reference to review professor data.
+
+        Format: one row per alias variation, mapping to the same afterclass_name and database_id.
+        Includes existing, new, and updated professors with a method column.
         """
         lookup_data = []
-        seen_ids = set()
-        for boss_name, data in self._professor_lookup.items():
-            # Avoid duplicates - one entry per database_id
-            if data['database_id'] in seen_ids:
-                continue
-            seen_ids.add(data['database_id'])
+
+        # Existing professors: one row per alias key in professor_lookup
+        for alias_key, data in self._professor_lookup.items():
             lookup_data.append({
-                'boss_name': data['boss_name'],
+                'boss_name': alias_key,
                 'afterclass_name': data['afterclass_name'],
                 'database_id': data['database_id'],
                 'method': 'exists'
             })
+
+        # Updated professors: one row per alias
+        for dto in getattr(self, '_results_updated', []):
+            for alias in dto.boss_aliases:
+                alias_upper = alias.upper()
+                lookup_data.append({
+                    'boss_name': alias_upper,
+                    'afterclass_name': dto.name,
+                    'database_id': dto.id,
+                    'method': 'updated'
+                })
+
+        # New professors: one row per alias
+        for dto in self._new_professors_dtos:
+            for alias in dto.boss_aliases:
+                alias_upper = alias.upper()
+                lookup_data.append({
+                    'boss_name': alias_upper,
+                    'afterclass_name': dto.name,
+                    'database_id': dto.id,
+                    'method': 'new'
+                })
 
         df = pd.DataFrame(lookup_data)
         output_path = 'script_output/professor_lookup.csv'
