@@ -46,6 +46,24 @@ class CourseDTO:
         return row
 
     @staticmethod
+    def from_dict(item: dict) -> 'CourseDTO':
+        """Create a CourseDTO from a dictionary (e.g., from database cache)."""
+        from datetime import datetime
+
+        return CourseDTO(
+            id=item.get('id'),
+            code=item.get('code'),
+            name=item.get('name'),
+            description=item.get('description'),
+            credit_units=item.get('credit_units'),
+            belong_to_university=item.get('belong_to_university'),
+            belong_to_faculty=item.get('belong_to_faculty'),
+            course_area=item.get('course_area'),
+            enrolment_requirements=item.get('enrolment_requirements'),
+            updated_at=item.get('updated_at')
+        )
+
+    @staticmethod
     def from_row(row, faculty_id: int) -> 'CourseDTO':
         """Factory method to create DTO from DataFrame row."""
         import pandas as pd

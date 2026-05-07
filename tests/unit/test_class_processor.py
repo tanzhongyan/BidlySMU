@@ -9,6 +9,35 @@ from datetime import datetime
 from src.pipeline.processors.class_processor import ClassProcessor
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.course_dto import CourseDTO
+from src.pipeline.processors.professor_resolution_service import ProfessorResolutionService
+from src.pipeline.dtos.professor_dto import ProfessorDTO
+
+
+class MockProfessorResolutionService:
+    """Mock implementation of ProfessorResolutionService for testing."""
+
+    def __init__(self, professor_lookup: dict = None):
+        self._professor_lookup = professor_lookup or {}
+        self._resolved = []
+
+    def resolve_professor_ids(self, record_key: str, multiple_rows: list) -> list:
+        """Return professor IDs from pre-configured lookup."""
+        if not record_key:
+            return []
+        rows = multiple_rows or []
+        results = []
+        for row in rows:
+            prof_name = row.get('professor_name', '')
+            upper_name = prof_name.upper() if prof_name else ''
+            if upper_name in self._professor_lookup:
+                prof_id = self._professor_lookup[upper_name]
+                if prof_id not in [r[0] for r in results]:
+                    results.append((prof_id, prof_name))
+        return results
+
+    def resolve_professor_name(self, name: str):
+        upper = name.upper() if name else ''
+        return self._professor_lookup.get(upper)
 
 
 class TestClassProcessor:
@@ -16,22 +45,24 @@ class TestClassProcessor:
 
     def test_requires_raw_data(self):
         """Processor should require raw_data parameter."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
         assert processor._raw_data is not None
 
     def test_initializes_with_empty_lookups(self):
         """Processor should initialize with empty lookups when not provided."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
         assert processor._multiple_lookup == {}
@@ -39,11 +70,12 @@ class TestClassProcessor:
 
     def test_process_returns_tuple(self):
         """process() should return (new_classes, updated_classes) tuple."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[],
             logger=Mock()
         )
@@ -62,11 +94,12 @@ class TestBuildExistingLookup:
             {'acad_term_id': 'AY202526T1', 'boss_id': 1001, 'professor_id': 'prof2', 'id': 'class-2'},
         ]
 
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=existing_cache
         )
 
@@ -82,11 +115,12 @@ class TestBuildExistingLookup:
             {'acad_term_id': 'AY202526T1', 'boss_id': None, 'professor_id': 'prof1', 'id': 'class-1'},
         ]
 
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=existing_cache
         )
 
@@ -95,101 +129,17 @@ class TestBuildExistingLookup:
         assert len(processor._existing_class_lookup) == 0
 
 
-class TestFindProfessorsForClass:
-    """Tests for _find_professors_for_class method."""
-
-    def test_returns_empty_when_no_record_key(self):
-        """_find_professors_for_class should return empty list when record_key is None."""
-        processor = ClassProcessor(
-            raw_data=pd.DataFrame(),
-            multiple_lookup={},
-            course_lookup={},
-            professor_lookup={},
-            existing_classes_cache=[]
-        )
-
-        result = processor._find_professors_for_class(None)
-        assert result == []
-
-    def test_returns_empty_when_record_key_not_in_lookup(self):
-        """_find_professors_for_class should return empty list when key not in multiple_lookup."""
-        processor = ClassProcessor(
-            raw_data=pd.DataFrame(),
-            multiple_lookup={},
-            course_lookup={},
-            professor_lookup={},
-            existing_classes_cache=[]
-        )
-
-        result = processor._find_professors_for_class('nonexistent_key')
-        assert result == []
-
-    def test_finds_professors_normalized(self):
-        """_find_professors_for_class should find professors using normalized names."""
-        professor_lookup = {
-            'JOHN SMITH': 'prof-uuid-1',
-            'JANE DOE': 'prof-uuid-2'
-        }
-
-        multiple_lookup = {
-            'key1': [
-                {'professor_name': 'John Smith'},
-                {'professor_name': 'Jane Doe'}
-            ]
-        }
-
-        processor = ClassProcessor(
-            raw_data=pd.DataFrame(),
-            multiple_lookup=multiple_lookup,
-            course_lookup={},
-            professor_lookup=professor_lookup,
-            existing_classes_cache=[]
-        )
-
-        result = processor._find_professors_for_class('key1')
-
-        assert len(result) == 2
-        professor_ids = [p[0] for p in result]
-        assert 'prof-uuid-1' in professor_ids
-        assert 'prof-uuid-2' in professor_ids
-
-    def test_skips_missing_professor_names(self):
-        """_find_professors_for_class should skip rows without professor_name."""
-        professor_lookup = {
-            'JOHN SMITH': 'prof-uuid-1',
-        }
-
-        multiple_lookup = {
-            'key1': [
-                {'professor_name': 'John Smith'},
-                {'other_field': 'value'}
-            ]
-        }
-
-        processor = ClassProcessor(
-            raw_data=pd.DataFrame(),
-            multiple_lookup=multiple_lookup,
-            course_lookup={},
-            professor_lookup=professor_lookup,
-            existing_classes_cache=[]
-        )
-
-        result = processor._find_professors_for_class('key1')
-
-        assert len(result) == 1
-        assert result[0][1] == 'John Smith'
-
-
 class TestCompareValues:
     """Tests for _compare_values method."""
 
     def test_detects_change_in_values(self):
         """_compare_values should detect when values are different."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
@@ -198,11 +148,12 @@ class TestCompareValues:
 
     def test_detects_no_change_when_same(self):
         """_compare_values should detect when values are the same."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
@@ -211,11 +162,12 @@ class TestCompareValues:
 
     def test_handles_nan_values(self):
         """_compare_values should handle NaN values."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
@@ -224,15 +176,15 @@ class TestCompareValues:
 
     def test_handles_mixed_nan_and_value(self):
         """_compare_values should not flag as changed when new value is NaN (incoming empty)."""
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=pd.DataFrame(),
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
-        # When new_value is NaN and old_value is 'some_value', should NOT change
         new_val, old_val, changed = processor._compare_values(float('nan'), 'some_value')
         assert changed is False
 
@@ -248,11 +200,12 @@ class TestProcessRow:
             'section': 'G1'
         }])
 
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=raw_data,
             multiple_lookup={},
             course_lookup={'MGMT715': MagicMock(id='course-123')},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
@@ -269,11 +222,12 @@ class TestProcessRow:
             'section': 'G1'
         }])
 
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=raw_data,
             multiple_lookup={},
             course_lookup={'MGMT715': MagicMock(id='course-123')},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 
@@ -290,11 +244,12 @@ class TestProcessRow:
             'section': 'G1'
         }])
 
+        mock_service = MockProfessorResolutionService()
         processor = ClassProcessor(
             raw_data=raw_data,
             multiple_lookup={},
             course_lookup={},
-            professor_lookup={},
+            professor_resolution_service=mock_service,
             existing_classes_cache=[]
         )
 

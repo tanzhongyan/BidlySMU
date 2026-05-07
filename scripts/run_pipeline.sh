@@ -28,6 +28,7 @@ export PYTHONIOENCODING=utf-8
 # ==============================================================================
 
 # --- Setup ---
+# Consolidated logging to single logs/ directory at project root
 mkdir -p logs
 mkdir -p script_output
 
@@ -118,11 +119,11 @@ config = PipelineConfig.from_env(
 )
 coordinator = PipelineCoordinator(config=config)
 coordinator.run()
-" 2>&1 | tee "script_output/${LOG_FILENAME}"
+" 2>&1 | tee "logs/${LOG_FILENAME}"
 
 if [ $? -ne 0 ]; then
     echo "❌ ERROR: PipelineCoordinator failed. Halting pipeline."
-    echo "   - Check script_output/${LOG_FILENAME} for details."
+    echo "   - Check logs/${LOG_FILENAME} for details."
     exit 1
 fi
 
@@ -130,3 +131,4 @@ echo "✅ Step 2 completed successfully."
 echo "============================================================"
 echo "🎉 SMU Data Pipeline finished successfully at $(date)"
 echo "============================================================"
+echo "📁 Full log saved to: logs/${LOG_FILENAME}"

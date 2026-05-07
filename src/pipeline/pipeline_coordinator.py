@@ -257,7 +257,7 @@ class PipelineCoordinator:
         )
         professors_new, professors_updated = professor_processor.process()
         self.results['professors'] = {'new': professors_new, 'updated': professors_updated}
-        self.results['professor_lookup'] = self._build_professor_name_lookup()
+        professor_resolution_service = professor_processor.resolution_service
         self._logger.info(f"✅ Processed professors: {len(professors_new)} new, {len(professors_updated)} updated")
 
         # Process bid windows
@@ -296,7 +296,7 @@ class PipelineCoordinator:
             raw_data=self.raw_data[SHEET_STANDALONE],
             multiple_lookup=multiple_lookup,
             course_lookup=course_lookup,
-            professor_lookup=self.results['professor_lookup'],
+            professor_resolution_service=professor_resolution_service,
             existing_classes_cache=existing_classes_cache,
             logger=self._logger
         )
@@ -409,6 +409,7 @@ class PipelineCoordinator:
 
         Generic function to build lookups for any dimension table.
         Combines 'new' and 'updated' DTOs into single lookup dict.
+        Also includes existing DTOs from the database cache.
 
         Args:
             dimension: The dimension name in self.results (e.g., 'courses', 'acad_terms')
@@ -418,12 +419,66 @@ class PipelineCoordinator:
             Dict mapping key_field value to DTO
         """
         lookup = {}
+
+        # First, add existing DTOs from database cache (if available)
+        # This ensures lookup contains ALL existing records, not just new/updated
+        cache = self.db_cache.get(dimension, {})
+        if isinstance(cache, list):
+            # Cache is a list of dicts, convert to DTOs based on dimension type
+            for item in cache:
+                dto = self._dict_to_dto(dimension, item)
+                if dto and hasattr(dto, key_field):
+                    lookup[getattr(dto, key_field)] = dto
+        elif isinstance(cache, dict):
+            # Cache is already a dict, may need conversion
+            for key, item in cache.items():
+                if hasattr(item, key_field):
+                    lookup[getattr(item, key_field)] = item
+                elif isinstance(item, dict):
+                    dto = self._dict_to_dto(dimension, item)
+                    if dto and hasattr(dto, key_field):
+                        lookup[getattr(dto, key_field)] = dto
+
+        # Then add new/updated DTOs (these override cache entries if same key)
         data = self.results.get(dimension, {})
         for dto in data.get('new', []):
             lookup[getattr(dto, key_field)] = dto
         for dto in data.get('updated', []):
             lookup[getattr(dto, key_field)] = dto
+
         return lookup
+
+    def _dict_to_dto(self, dimension: str, item: dict):
+        """Convert a dict from database cache to a DTO."""
+        from src.pipeline.dtos.course_dto import CourseDTO
+        from src.pipeline.dtos.acad_term_dto import AcadTermDTO
+        from src.pipeline.dtos.professor_dto import ProfessorDTO
+
+        if dimension == 'courses':
+            return CourseDTO.from_dict(item) if hasattr(CourseDTO, 'from_dict') else self._create_course_dto(item)
+        elif dimension == 'acad_terms':
+            return AcadTermDTO.from_dict(item) if hasattr(AcadTermDTO, 'from_dict') else None
+        elif dimension == 'professors':
+            return ProfessorDTO.from_dict(item) if hasattr(ProfessorDTO, 'from_dict') else None
+        return None
+
+    def _create_course_dto(self, item: dict):
+        """Create a CourseDTO from a dict."""
+        from src.pipeline.dtos.course_dto import CourseDTO
+        from datetime import datetime
+
+        return CourseDTO(
+            id=item.get('id'),
+            code=item.get('code'),
+            name=item.get('name'),
+            description=item.get('description'),
+            credit_units=item.get('credit_units'),
+            belong_to_university=item.get('belong_to_university'),
+            belong_to_faculty=item.get('belong_to_faculty'),
+            course_area=item.get('course_area'),
+            enrolment_requirements=item.get('enrolment_requirements'),
+            updated_at=item.get('updated_at', datetime.now())
+        )
 
     def _build_composite_lookup(self, dimension: str, key_fields: List[str]) -> dict:
         """Build lookup using multiple fields as key.
@@ -440,62 +495,6 @@ class PipelineCoordinator:
         for dto in data.get('new', []) + data.get('updated', []):
             key = tuple(getattr(dto, f) for f in key_fields)
             lookup[key] = dto
-        return lookup
-
-    def _build_professor_name_lookup(self) -> dict:
-        """Build {boss_name_upper: professor_id} lookup from professor DTOs AND DB cache.
-
-        This is different from _build_lookup because ClassProcessor needs
-        boss_name -> professor_id mapping, not id -> ProfessorDTO.
-
-        IMPORTANT: Must include professors from DB cache because ClassProcessor
-        only receives professor names from the raw data and needs to resolve them
-        to IDs. The lookup must contain ALL known professors, not just new/updated ones.
-        """
-        lookup = {}
-
-        # First, add all professors from DB cache (they are already in the database)
-        # Note: professors_cache is a DataFrame where each ROW is a professor
-        professors_cache = self.db_cache.get('professors', {})
-        if isinstance(professors_cache, pd.DataFrame):
-            # Iterate over DataFrame rows, not columns
-            for _, row in professors_cache.iterrows():
-                if row.get('name'):
-                    lookup[row['name'].upper()] = row['id']
-                    # Also add boss_aliases
-                    boss_aliases = row.get('boss_aliases')
-                    if boss_aliases:
-                        # boss_aliases can be a Python list or a JSON string from DB
-                        if isinstance(boss_aliases, list):
-                            for alias in boss_aliases:
-                                lookup[alias.upper()] = row['id']
-                        elif isinstance(boss_aliases, str):
-                            import json
-                            try:
-                                aliases_list = json.loads(boss_aliases)
-                                for alias in aliases_list:
-                                    lookup[alias.upper()] = row['id']
-                            except:
-                                pass
-        elif isinstance(professors_cache, dict):
-            # Legacy dict format
-            for name_upper, prof_data in professors_cache.items():
-                if isinstance(prof_data, dict) and 'id' in prof_data:
-                    lookup[name_upper] = prof_data['id']
-                    # Also add boss_aliases if present
-                    boss_aliases = prof_data.get('boss_aliases')
-                    if boss_aliases and isinstance(boss_aliases, list):
-                        for alias in boss_aliases:
-                            lookup[alias.upper()] = prof_data['id']
-
-        # Then add/update with professors processed in this run (they may be new or updated)
-        for dto in self.results.get('professors', {}).get('new', []) + \
-                  self.results.get('professors', {}).get('updated', []):
-            if dto.name:
-                lookup[dto.name.upper()] = dto.id
-            for alias in dto.boss_aliases:
-                lookup[alias.upper()] = dto.id
-
         return lookup
 
     def _build_multiple_lookup(self) -> dict:

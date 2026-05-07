@@ -10,11 +10,13 @@ import uuid
 import time
 import logging
 import pandas as pd
+from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Set
 
 from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.professor_dto import ProfessorDTO
+from src.pipeline.processors.professor_resolution_service import ProfessorResolutionService
 
 
 # ============================================================================
@@ -197,6 +199,16 @@ class ProfessorProcessor(AbstractProcessor):
         self._llm_batch_size = self._LLM_BATCH_SIZE
         self._llm_prompt = None
         self._new_professors_dtos: List[ProfessorDTO] = []  # Session deduplication
+        # Build set of valid professor IDs from DB cache for validation
+        self._valid_professor_ids = {str(p['id']) for p in professors_cache.values() if 'id' in p}
+        # Resolution service built early (with DB cache) and updated with session professors at end of process()
+        self.resolution_service = ProfessorResolutionService(
+            professors_cache=professors_cache,
+            new_professors=[],
+            updated_professors=[],
+            logger=logger,
+            valid_professor_ids=self._valid_professor_ids
+        )
 
     def set_llm_client(self, client, model_name: str, batch_size: int, prompt: str):
         """Configure LLM client for batch normalization."""
@@ -228,7 +240,107 @@ class ProfessorProcessor(AbstractProcessor):
         self._save_professor_lookup_csv()
 
         self._logger.info(f"Professor processing complete: {len(results_new)} new, {len(results_updated)} updated")
+
+        # Update resolution service with session-created professors
+        self.resolution_service.update_with_session_professors(
+            new_professors=results_new,
+            updated_professors=results_updated
+        )
+
+        # Also update with all discovered name variations from professor_lookup
+        # This is critical for ClassProcessor to resolve professor names correctly
+        self.resolution_service.update_with_professor_lookup(self._professor_lookup)
+
         return results_new, results_updated
+
+    def _get_professor_id_from_lookup(self, prof_name: str) -> Optional[str]:
+        """Get professor_id from lookup after a successful match.
+
+        This method retrieves the database_id from the professor_lookup
+        that was populated during the resolution chain.
+        """
+        normalized_name = prof_name.upper()
+
+        # Check direct lookup
+        if normalized_name in self._professor_lookup:
+            return self._professor_lookup[normalized_name]['database_id']
+
+        # Check boss_name lookup (normalized)
+        boss_name, _ = self._normalize_professor_name_fallback(prof_name)
+        if boss_name.upper() in self._professor_lookup:
+            return self._professor_lookup[boss_name.upper()]['database_id']
+
+        return None
+
+    def _update_existing_professors_with_new_variations(
+        self,
+        new_variations: Dict[str, Set[str]]
+    ) -> List[ProfessorDTO]:
+        """Update existing professors in database with new boss_aliases variations.
+
+        This method creates UPDATE DTOs for professors whose boss_aliases need to be
+        extended with newly discovered raw name variations.
+
+        Args:
+            new_variations: Dict mapping professor_id -> set of new aliases to add
+
+        Returns:
+            List of ProfessorDTO representing professors to be updated
+        """
+        updated_dtos = []
+
+        for prof_id, new_aliases in new_variations.items():
+            # Find the professor in the cache
+            prof_data = None
+            for _, data in self._professors_cache.items():
+                if str(data.get('id')) == prof_id:
+                    prof_data = data
+                    break
+
+            if prof_data is None:
+                self._logger.warning(f"Could not find professor {prof_id} in cache to update aliases")
+                continue
+
+            # Get current aliases
+            current_aliases = set(self.parse_boss_aliases(prof_data.get('boss_aliases', [])))
+
+            # Add new aliases (normalize to upper for comparison)
+            current_aliases_upper = {a.upper() for a in current_aliases}
+            added_count = 0
+            for new_alias in new_aliases:
+                if new_alias.upper() not in current_aliases_upper:
+                    current_aliases.add(new_alias.upper())
+                    added_count += 1
+
+            if added_count == 0:
+                # No new aliases to add
+                continue
+
+            # Create UPDATE DTO
+            updated_aliases_list = sorted(list(current_aliases))
+
+            # Build the row for the DTO
+            row = {
+                'id': prof_id,
+                'name': prof_data.get('name', ''),
+                'slug': prof_data.get('slug', ''),
+                'email': prof_data.get('email', ''),
+                'photo_url': prof_data.get('photo_url', ''),
+                'profile_url': prof_data.get('profile_url', ''),
+                'belong_to_university': prof_data.get('belong_to_university', 1),
+                'boss_aliases': json.dumps(updated_aliases_list),
+                'original_scraped_name': prof_data.get('original_scraped_name', ''),
+                'updated_at': datetime.now().isoformat()
+            }
+
+            dto = ProfessorDTO.from_row(row)
+            # Set updated_at to indicate this is an UPDATE, not CREATE
+            dto.updated_at = datetime.now().isoformat()
+
+            updated_dtos.append(dto)
+            self._logger.info(f"Added {added_count} new alias(es) to professor {prof_data.get('name')} ({prof_id}): {new_aliases}")
+
+        return updated_dtos
 
     # ------------------------------------------------------------------------
     # Normalization (LLM + fallback)
@@ -403,6 +515,10 @@ class ProfessorProcessor(AbstractProcessor):
         results_new = []
         results_updated = []
 
+        # Track new variations for EXISTING professors
+        # Key: professor_id, Value: set of new variations to add to boss_aliases
+        new_variations_for_existing: Dict[str, Set[str]] = {}
+
         for prof_name in unique_professors:
             boss_name, afterclass_name = normalized_map.get(prof_name, ("UNKNOWN", "Unknown"))
 
@@ -413,6 +529,21 @@ class ProfessorProcessor(AbstractProcessor):
                 dto = self._create_new_professor(prof_name, boss_name, afterclass_name, professor_variations.get(prof_name, set()))
                 results_new.append(dto)
                 self._new_professors_dtos.append(dto)
+            else:
+                # Professor was matched - track this variation for the existing professor
+                # This ensures ALL raw name variations are stored as aliases
+                prof_id = self._get_professor_id_from_lookup(prof_name)
+                if prof_id:
+                    if prof_id not in new_variations_for_existing:
+                        new_variations_for_existing[prof_id] = set()
+                    # Store the original scraped name as an alias
+                    new_variations_for_existing[prof_id].add(prof_name.upper())
+                    # Also store the boss_name variation
+                    new_variations_for_existing[prof_id].add(boss_name.upper())
+
+        # Update existing professors with new variations (add to boss_aliases)
+        if new_variations_for_existing:
+            results_updated = self._update_existing_professors_with_new_variations(new_variations_for_existing)
 
         return results_new, results_updated
 
@@ -529,14 +660,22 @@ class ProfessorProcessor(AbstractProcessor):
         slug = re.sub(r'[^a-zA-Z0-9]+', '-', afterclass_name.lower()).strip('-')
 
         # Build boss_aliases from boss_name + variations
+        # CRITICAL: Store ALL variations found in raw data as aliases for future matching
         aliases_set = {boss_name}
+
+        # Add the original scraped name (if different from boss_name)
+        if prof_name.upper() != boss_name:
+            aliases_set.add(prof_name.upper())
+
+        # Add ALL variations found in raw data (from professor_variations dict)
         if variations:
             for variation in variations:
                 if variation and variation.strip():
+                    # Store the raw variation as-is (normalized to upper)
+                    aliases_set.add(variation.upper().strip())
+                    # Also store the normalized boss_name version
                     var_boss_name, _ = self._normalize_professor_name_fallback(variation.strip())
                     aliases_set.add(var_boss_name)
-        if boss_name != prof_name.upper():
-            aliases_set.add(prof_name.upper())
 
         boss_aliases_list = sorted(list(aliases_set))
 
@@ -612,97 +751,60 @@ class ProfessorProcessor(AbstractProcessor):
     # ------------------------------------------------------------------------
 
     def _extract_unique_professors(self) -> Tuple[set, Dict[str, set]]:
-        """Extract unique professor names from raw data."""
+        """Extract unique professor names from raw data (both standalone and multiple sheets)."""
         unique_professors = set()
         professor_variations = defaultdict(set)
 
+        # Load multiple sheet for professor name lookup
+        multiple_df = None
+        try:
+            raw_data = pd.read_excel('script_input/raw_data.xlsx', sheet_name=['multiple'])
+            multiple_df = raw_data['multiple']
+        except Exception as e:
+            self._logger.warning(f"Could not load multiple sheet: {e}")
+
+        # Extract from standalone (legacy - may not have professor_name)
         for _, row in self._raw_data.iterrows():
-            prof_name_raw = row.get('professor_name')
-            if prof_name_raw is None or pd.isna(prof_name_raw):
-                continue
+            self._extract_professor_from_row(row, unique_professors, professor_variations)
 
-            prof_name = str(prof_name_raw).strip()
-            if not prof_name or prof_name.lower() in ['nan', 'tba', 'to be announced']:
-                continue
-
-            split_professors = self._split_professor_names(prof_name)
-            for individual in split_professors:
-                clean_prof = individual.strip()
-                if clean_prof:
-                    unique_professors.add(clean_prof)
-                    # Check for comma-separated format where extension is multi-word
-                    # e.g., "YUESHEN, BART ZHOU" - we want to keep the full name intact
-                    if ', ' in clean_prof:
-                        parts = clean_prof.split(', ')
-                        if len(parts) == 2:
-                            base_name = parts[0].strip()
-                            extension = parts[1].strip()
-                            # Only track as variation if extension is single word
-                            # Multi-word extension (like "BART ZHOU") means full name should be kept
-                            if len(extension.split()) == 1:
-                                professor_variations[clean_prof].add(base_name)
-                                professor_variations[clean_prof].add(clean_prof)
-                                if base_name in professor_variations:
-                                    professor_variations[base_name].add(clean_prof)
-                            else:
-                                # Multi-word extension - full name is the real name, no split needed
-                                professor_variations[clean_prof].add(clean_prof)
-                    else:
-                        professor_variations[clean_prof].add(clean_prof)
+        # Also extract from multiple sheet (this is where professor names actually are!)
+        if multiple_df is not None and 'professor_name' in multiple_df.columns:
+            for _, row in multiple_df.iterrows():
+                self._extract_professor_from_row(row, unique_professors, professor_variations)
 
         return unique_professors, dict(professor_variations)
 
-    def _split_professor_names(self, name: str) -> List[str]:
-        """Split professor names using greedy longest-match-first algorithm.
+    def _extract_professor_from_row(
+        self,
+        row: pd.Series,
+        unique_professors: Set[str],
+        professor_variations: Dict[str, Set[str]]
+    ) -> None:
+        """Extract professor names from a row and populate unique_professors and professor_variations."""
+        prof_name_raw = row.get('professor_name')
+        if prof_name_raw is None or pd.isna(prof_name_raw):
+            return
 
-        Uses professor_lookup to identify known professors. Unknown single-word
-        parts are combined with the previous known professor, not treated as standalone.
-        This prevents single-word names like "Hara" from becoming separate professors.
-        """
-        if not name:
-            return []
+        prof_name = str(prof_name_raw).strip()
+        if not prof_name or prof_name.lower() in ['nan', 'tba', 'to be announced']:
+            return
 
-        name_str = str(name).strip()
-
-        # Quick return: if entire string is a known professor, return as-is
-        # This handles comma-containing names like "LEE, MICHELLE PUI YEE"
-        if name_str.upper() in self._professor_lookup:
-            return [name_str]
-
-        # No commas means single professor
-        if ',' not in name_str:
-            return [name_str] if name_str else []
-
-        parts = [p.strip() for p in name_str.split(',') if p.strip()]
-
-        found_professors = []
-        i = 0
-
-        while i < len(parts):
-            match_found = False
-
-            # Try longest combination first (greedy matching)
-            for j in range(len(parts), i, -1):
-                candidate = ', '.join(parts[i:j])
-                if candidate.upper() in self._professor_lookup:
-                    found_professors.append(candidate)
-                    i = j
-                    match_found = True
-                    break
-
-            # No match found - handle unknown parts
-            if not match_found:
-                unknown_part = parts[i]
-
-                # KEY CONSTRAINT: Single-word unknown parts COMBINE with previous professor
-                # This prevents standalone single-word names like "Hara" or "Eileen"
-                if found_professors and len(unknown_part.split()) == 1:
-                    found_professors[-1] = f"{found_professors[-1]}, {unknown_part}"
-                    self._logger.info(f"Combined unknown single word '{unknown_part}' with previous professor -> '{found_professors[-1]}'")
+        split_professors = self.resolution_service.split_professor_names(prof_name)
+        for individual in split_professors:
+            clean_prof = individual.strip()
+            if clean_prof:
+                unique_professors.add(clean_prof)
+                if ', ' in clean_prof:
+                    parts = clean_prof.split(', ')
+                    if len(parts) == 2:
+                        base_name = parts[0].strip()
+                        extension = parts[1].strip()
+                        if len(extension.split()) == 1:
+                            professor_variations[clean_prof].add(base_name)
+                            professor_variations[clean_prof].add(clean_prof)
+                            if base_name in professor_variations:
+                                professor_variations[base_name].add(clean_prof)
+                        else:
+                            professor_variations[clean_prof].add(clean_prof)
                 else:
-                    # Multi-word unknown or no previous professor -> standalone
-                    found_professors.append(unknown_part)
-
-                i += 1
-
-        return found_professors
+                    professor_variations[clean_prof].add(clean_prof)
