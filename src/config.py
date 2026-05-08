@@ -75,27 +75,50 @@ _END_YEAR = ACAD_TERM_ID[6:8]
 _TERM = ACAD_TERM_ID[8:]
 START_AY_TERM = f"{_START_YEAR}-{_END_YEAR}_{_TERM}"
 
-# Current window computed at module load time from BIDDING_SCHEDULES
-_current_schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
-_now = datetime.now()
+# Lazy evaluation cache for expensive/time-dependent config values
+_config_cache: Dict[str, object] = {}
 
-current_window_name = None
-previous_window_name = None
 
-for i, (results_date, window_name, *rest) in enumerate(_current_schedule):
-    if _now < results_date:
-        current_window_name = window_name
-        if i > 0:
-            previous_window_name = _current_schedule[i-1][1]
-        break
+def _compute_and_cache_window_names() -> None:
+    """Compute CURRENT_WINDOW_NAME and PREVIOUS_WINDOW_NAME lazily on first access."""
+    schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
+    now = datetime.now()
 
-if current_window_name is None and _current_schedule:
-    current_window_name = _current_schedule[-1][1]
-    if len(_current_schedule) > 1:
-        previous_window_name = _current_schedule[-2][1]
+    current_window_name = None
+    previous_window_name = None
 
-CURRENT_WINDOW_NAME = current_window_name
-PREVIOUS_WINDOW_NAME = previous_window_name
+    for i, (results_date, window_name, *rest) in enumerate(schedule):
+        if now < results_date:
+            current_window_name = window_name
+            if i > 0:
+                previous_window_name = schedule[i - 1][1]
+            break
+
+    if current_window_name is None and schedule:
+        current_window_name = schedule[-1][1]
+        if len(schedule) > 1:
+            previous_window_name = schedule[-2][1]
+
+    _config_cache['CURRENT_WINDOW_NAME'] = current_window_name
+    _config_cache['PREVIOUS_WINDOW_NAME'] = previous_window_name
+
+
+def __getattr__(name):
+    """Lazy evaluation for time-dependent and I/O-dependent config values."""
+    if name == 'CURRENT_WINDOW_NAME':
+        if name not in _config_cache:
+            _compute_and_cache_window_names()
+        return _config_cache[name]
+    if name == 'PREVIOUS_WINDOW_NAME':
+        if name not in _config_cache:
+            _compute_and_cache_window_names()
+        return _config_cache[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _reset_config_cache() -> None:
+    """Clear cached config values. For testing only."""
+    _config_cache.clear()
 
 
 # ============================================================================

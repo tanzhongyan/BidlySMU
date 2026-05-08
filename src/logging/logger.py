@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import logging
 import os
+import threading
 
 # Try to import sentry_sdk - it's optional
 try:
@@ -70,6 +71,7 @@ class LoggerFactory:
     """
 
     _instances: dict = {}  # Cache of logger instances by name
+    _lock = threading.Lock()
 
     def create(self, config: LoggerConfig) -> logging.Logger:
         """
@@ -84,8 +86,9 @@ class LoggerFactory:
         Raises:
             ImportError: If Sentry is not installed but sentry_dsn is provided
         """
-        if config.name in self._instances:
-            return self._instances[config.name]
+        with self._lock:
+            if config.name in self._instances:
+                return self._instances[config.name]
 
         if config.sentry_dsn and not SENTRY_AVAILABLE:
             raise ImportError(
@@ -107,7 +110,8 @@ class LoggerFactory:
         if config.sentry_dsn and SENTRY_AVAILABLE:
             self._setup_sentry(logger, config)
 
-        self._instances[config.name] = logger
+        with self._lock:
+            self._instances[config.name] = logger
         return logger
 
     def _setup_sentry(self, logger: logging.Logger, config: LoggerConfig) -> None:
@@ -135,7 +139,8 @@ class LoggerFactory:
 
     def clear_cache(self) -> None:
         """Clear all cached logger instances. Useful for testing."""
-        self._instances.clear()
+        with self._lock:
+            self._instances.clear()
 
 
 # Module-level factory instance

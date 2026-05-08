@@ -97,11 +97,7 @@ class TestProfessorDTO:
 
 
 class TestExtractUniqueProfessors:
-    """Tests for _extract_unique_professors method.
-
-    Note: _extract_unique_professors reads from disk (script_input/raw_data.xlsx).
-    Tests must mock pd.read_excel to isolate from the filesystem.
-    """
+    """Tests for _extract_unique_professors method."""
 
     def test_extracts_simple_names(self):
         raw_data = pd.DataFrame({
@@ -113,8 +109,7 @@ class TestExtractUniqueProfessors:
             professors_cache={}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            unique_profs, variations = processor._extract_unique_professors()
+        unique_profs, variations = processor._extract_unique_professors()
 
         assert 'John Smith' in unique_profs
         assert 'Jane Doe' in unique_profs
@@ -130,8 +125,7 @@ class TestExtractUniqueProfessors:
             professors_cache={}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            unique_profs, variations = processor._extract_unique_professors()
+        unique_profs, variations = processor._extract_unique_professors()
 
         # With empty cache, 'LIM CHONG BOON DENNIS, PhD' is kept whole (PhD combines)
         # because split_professor_names treats single-word unknowns as combining with previous
@@ -148,8 +142,7 @@ class TestExtractUniqueProfessors:
             professors_cache={}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            unique_profs, variations = processor._extract_unique_professors()
+        unique_profs, variations = processor._extract_unique_professors()
 
         assert 'Valid Professor' in unique_profs
         assert len(unique_profs) == 1
@@ -164,8 +157,7 @@ class TestExtractUniqueProfessors:
             professors_cache={}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            unique_profs, variations = processor._extract_unique_professors()
+        unique_profs, variations = processor._extract_unique_professors()
 
         # With empty cache, split_professor_names splits 'YUESHEN, BART ZHOU'
         # into ['YUESHEN', 'BART ZHOU'] (both standalone unknowns)
@@ -406,8 +398,7 @@ class TestProcessMethod:
             professors_cache={}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            new_profs, updated_profs = processor.process()
+        new_profs, updated_profs = processor.process()
 
         assert len(new_profs) == 1
         assert isinstance(new_profs[0], ProfessorDTO)
@@ -425,8 +416,7 @@ class TestProcessMethod:
             professors_cache={"JOHN SMITH": {"id": "existing-uuid", "name": "John Smith"}}
         )
 
-        with patch('pandas.read_excel', side_effect=Exception("no file")):
-            new_profs, updated_profs = processor.process()
+        new_profs, updated_profs = processor.process()
 
         # Should NOT create new - found in cache
         assert len(new_profs) == 0

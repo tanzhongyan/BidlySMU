@@ -76,7 +76,7 @@ class ProfessorDTO:
 
     @staticmethod
     def from_row(row: dict, **kwargs) -> 'ProfessorDTO':
-        """Factory for CREATE - generates UUID, sets updated_at=None."""
+        """Factory for creating ProfessorDTO from row data. Used for both CREATE and UPDATE operations."""
         boss_aliases_raw = row.get('boss_aliases', '[]')
         if isinstance(boss_aliases_raw, str):
             try:

@@ -878,26 +878,12 @@ class ProfessorProcessor(AbstractProcessor):
     # ------------------------------------------------------------------------
 
     def _extract_unique_professors(self) -> Tuple[set, Dict[str, set]]:
-        """Extract unique professor names from raw data (both standalone and multiple sheets)."""
+        """Extract unique professor names from raw data (multiple sheet)."""
         unique_professors = set()
         professor_variations = defaultdict(set)
 
-        # Load multiple sheet for professor name lookup
-        multiple_df = None
-        try:
-            raw_data = pd.read_excel('script_input/raw_data.xlsx', sheet_name=['multiple'])
-            multiple_df = raw_data['multiple']
-        except Exception as e:
-            self._logger.warning(f"Could not load multiple sheet: {e}")
-
-        # Extract from standalone (legacy - may not have professor_name)
         for _, row in self._raw_data.iterrows():
             self._extract_professor_from_row(row, unique_professors, professor_variations)
-
-        # Also extract from multiple sheet (this is where professor names actually are!)
-        if multiple_df is not None and 'professor_name' in multiple_df.columns:
-            for _, row in multiple_df.iterrows():
-                self._extract_professor_from_row(row, unique_professors, professor_variations)
 
         return unique_professors, dict(professor_variations)
 

@@ -59,6 +59,7 @@ class ProfessorResolutionService:
         self._full_lookup: Dict[str, Dict] = {}  # boss_name_upper -> {database_id, boss_name, afterclass_name}
         self._boss_alias_lookup: Dict[str, str] = {}  # alias_upper -> boss_name_upper
         self._new_professor_ids: Dict[str, str] = {}  # boss_name_upper -> professor_id (session only)
+        self._new_professor_id_values: Set[str] = set()  # O(1) lookup for _is_valid_professor_id
         self._valid_professor_ids = valid_professor_ids  # Set of valid IDs from DB for validation
 
         self._build_lookups(professors_cache, new_professors, updated_professors)
@@ -101,12 +102,14 @@ class ProfessorResolutionService:
                 'afterclass_name': dto.name
             }
             self._new_professor_ids[boss_name_upper] = prof_id
+            self._new_professor_id_values.add(prof_id)
 
             for alias in dto.boss_aliases:
                 alias_upper = alias.upper()
                 self._direct_lookup[alias_upper] = prof_id
                 self._boss_alias_lookup[alias_upper] = boss_name_upper
                 self._new_professor_ids[alias_upper] = prof_id
+                self._new_professor_id_values.add(prof_id)
 
         # 3. Populate from updated_professors (session-updated)
         for dto in updated_professors:
@@ -148,12 +151,14 @@ class ProfessorResolutionService:
                 'afterclass_name': dto.name
             }
             self._new_professor_ids[boss_name_upper] = prof_id
+            self._new_professor_id_values.add(prof_id)
 
             for alias in dto.boss_aliases:
                 alias_upper = alias.upper()
                 self._direct_lookup[alias_upper] = prof_id
                 self._boss_alias_lookup[alias_upper] = boss_name_upper
                 self._new_professor_ids[alias_upper] = prof_id
+                self._new_professor_id_values.add(prof_id)
 
         # Add updated_professors (session-updated)
         # Only add NEW aliases/entries — do NOT overwrite existing _direct_lookup
@@ -258,7 +263,7 @@ class ProfessorResolutionService:
     def _is_valid_professor_id(self, professor_id: str) -> bool:
         """Check if a professor ID is valid (exists in DB or was created this session)."""
         # Session-created professors are always valid
-        if professor_id in self._new_professor_ids.values():
+        if professor_id in self._new_professor_id_values:
             return True
         if not self._valid_professor_ids:
             # If no validation set provided, accept all IDs

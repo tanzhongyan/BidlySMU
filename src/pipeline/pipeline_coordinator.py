@@ -23,6 +23,10 @@ from src.pipeline.processors.class_timing_processor import ClassTimingProcessor
 from src.pipeline.processors.course_processor import CourseProcessor
 from src.pipeline.processors.professor_processor import ProfessorProcessor
 from src.pipeline.processors.safety_factor_processor import SafetyFactorProcessor
+from src.pipeline.dtos.class_dto import ClassDTO
+from src.pipeline.dtos.course_dto import CourseDTO
+from src.pipeline.dtos.acad_term_dto import AcadTermDTO
+from src.pipeline.dtos.professor_dto import ProfessorDTO
 
 # Sheet name constants
 SHEET_STANDALONE = 'standalone'
@@ -308,7 +312,6 @@ class PipelineCoordinator:
         classes_to_deactivate = class_processor.get_classes_to_deactivate()
         if classes_to_deactivate:
             self._logger.info(f"Processing {len(classes_to_deactivate)} class deactivations")
-            from src.pipeline.dtos.class_dto import ClassDTO
             for c in classes_to_deactivate:
                 if c.get('professor_id') is not None:
                     deactivated_dto = ClassDTO(
@@ -475,10 +478,6 @@ class PipelineCoordinator:
 
     def _dict_to_dto(self, dimension: str, item: dict):
         """Convert a dict from database cache to a DTO."""
-        from src.pipeline.dtos.course_dto import CourseDTO
-        from src.pipeline.dtos.acad_term_dto import AcadTermDTO
-        from src.pipeline.dtos.professor_dto import ProfessorDTO
-
         if dimension == 'courses':
             return CourseDTO.from_dict(item) if hasattr(CourseDTO, 'from_dict') else self._create_course_dto(item)
         elif dimension == 'acad_terms':
@@ -489,9 +488,6 @@ class PipelineCoordinator:
 
     def _create_course_dto(self, item: dict):
         """Create a CourseDTO from a dict."""
-        from src.pipeline.dtos.course_dto import CourseDTO
-        from datetime import datetime
-
         return CourseDTO(
             id=item.get('id'),
             code=item.get('code'),
@@ -536,8 +532,6 @@ class PipelineCoordinator:
 
     def _dict_to_class_dto(self, item: dict):
         """Create a ClassDTO from a dict (e.g., from database cache)."""
-        from src.pipeline.dtos.class_dto import ClassDTO
-
         return ClassDTO(
             id=item.get('id'),
             section=item.get('section', ''),

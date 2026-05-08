@@ -110,6 +110,7 @@ class DatabaseHelper:
                 params = [row[col] for col in update_cols] + [row[idx] for idx in index_elements]
                 param_sets.append(tuple(params))
             execute_batch(cursor, sql_stub, param_sets, page_size=1000)
+            connection.commit()
             if logger is not None:
                 logger.info(f"Queued {len(df)} records for UPDATE into {table_name}.")
         finally:
@@ -130,7 +131,7 @@ class DatabaseHelper:
 
         for table_name in tables:
             try:
-                query = f"SELECT * FROM {table_name}"
+                query = f'SELECT * FROM "{table_name}"'
                 df = pd.read_sql_query(query, connection)
                 cache_path = os.path.join(cache_dir, f'{table_name}_cache.pkl')
                 df.to_pickle(cache_path)

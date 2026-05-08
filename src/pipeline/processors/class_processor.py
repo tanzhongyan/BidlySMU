@@ -367,7 +367,7 @@ class ClassProcessor:
                     old_value = old_value[0]
                 else:
                     old_value = None
-            except:
+            except (AttributeError, ValueError):
                 old_value = None
 
         if hasattr(new_value, '__iter__') and not isinstance(new_value, str):
@@ -378,7 +378,7 @@ class ClassProcessor:
                     new_value = new_value[0]
                 else:
                     new_value = None
-            except:
+            except (AttributeError, ValueError):
                 new_value = None
 
         try:
@@ -389,5 +389,5 @@ class ClassProcessor:
             new_val_str = str(new_value).strip()
             old_val_str = str(old_value).strip()
             return new_value, old_value, new_val_str != old_val_str
-        except:
+        except (TypeError, ValueError):
             return new_value, old_value, pd.notna(new_value)
