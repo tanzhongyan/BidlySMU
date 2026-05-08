@@ -234,4 +234,99 @@ class TestEnrichBiddingData:
         assert 'instructor' in result.columns
         assert 'John Smith' in result['instructor'].iloc[0]
 
+    def test_adds_day_of_week_from_multiple_lookup(self):
+        """_enrich_bidding_data should add day_of_week column from multiple_lookup."""
+        raw_data = pd.DataFrame({
+            'bidding_window': ['Round 1 Window 1'],
+            'record_key': ['key1'],
+            'total': [40],
+            'current_enrolled': [25]
+        })
+
+        multiple_lookup = {
+            'key1': [{'type': 'CLASS', 'day_of_week': 'Monday', 'start_time': '09:00'}]
+        }
+
+        processor = BidPredictionProcessor(
+            raw_data=raw_data,
+            class_lookup={},
+            bid_window_lookup={},
+            multiple_lookup=multiple_lookup,
+            logger=Mock()
+        )
+
+        result = processor._enrich_bidding_data(raw_data)
+
+        assert 'day_of_week' in result.columns
+
+    def test_before_process_vacancy_with_nan_values(self):
+        """_enrich_bidding_data should handle NaN total/enrolled gracefully."""
+        raw_data = pd.DataFrame({
+            'bidding_window': ['Round 1 Window 1'],
+            'record_key': ['key1'],
+            'total': [pd.NA],
+            'current_enrolled': [pd.NA]
+        })
+
+        processor = BidPredictionProcessor(
+            raw_data=raw_data,
+            class_lookup={},
+            bid_window_lookup={},
+            multiple_lookup={},
+            logger=Mock()
+        )
+
+        result = processor._enrich_bidding_data(raw_data)
+
+        assert 'before_process_vacancy' in result.columns
+
+
+class TestBidPredictionDTO:
+    """Tests for BidPredictionDTO serialization."""
+
+    def test_to_csv_row(self):
+        """BidPredictionDTO.to_csv_row should return dict with all fields."""
+        from datetime import datetime
+        dto = BidPredictionDTO(
+            class_id='class-123',
+            bid_window_id=1,
+            model_version='v4.0',
+            clf_has_bids_prob=0.85,
+            clf_confidence_score=0.92,
+            median_predicted=150.0,
+            median_uncertainty=15.0,
+            min_predicted=80.0,
+            min_uncertainty=10.0,
+            created_at=datetime(2026, 5, 8, 12, 0, 0)
+        )
+
+        row = dto.to_csv_row()
+        assert row['class_id'] == 'class-123'
+        assert row['bid_window_id'] == 1
+        assert row['model_version'] == 'v4.0'
+        assert row['clf_has_bids_prob'] == 0.85
+        assert row['median_predicted'] == 150.0
+        assert row['min_predicted'] == 80.0
+
+    def test_to_db_row(self):
+        """BidPredictionDTO.to_db_row should return dict with all fields."""
+        from datetime import datetime
+        dto = BidPredictionDTO(
+            class_id='class-123',
+            bid_window_id=1,
+            model_version='v4.0',
+            clf_has_bids_prob=0.85,
+            clf_confidence_score=0.92,
+            median_predicted=150.0,
+            median_uncertainty=15.0,
+            min_predicted=80.0,
+            min_uncertainty=10.0,
+            created_at=datetime(2026, 5, 8, 12, 0, 0)
+        )
+
+        row = dto.to_db_row()
+        assert row['class_id'] == 'class-123'
+        assert row['bid_window_id'] == 1
+        assert row['median_predicted'] == 150.0
+
 

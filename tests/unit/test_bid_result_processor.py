@@ -307,3 +307,68 @@ class TestBidResultDTO:
         assert dto.class_id == 'class-456'
         assert dto.median == 100.0
         assert dto.min == 50.0
+
+    def test_to_csv_row(self):
+        """BidResultDTO.to_csv_row should return dict with all fields."""
+        dto = BidResultDTO(
+            bid_window_id='bw-123',
+            class_id='class-456',
+            vacancy=30,
+            opening_vacancy=40,
+            before_process_vacancy=35,
+            dice=1,
+            after_process_vacancy=25,
+            enrolled_students=15,
+            median=100.0,
+            min=50.0
+        )
+
+        row = dto.to_csv_row()
+        assert row['bid_window_id'] == 'bw-123'
+        assert row['class_id'] == 'class-456'
+        assert row['vacancy'] == 30
+        assert row['median'] == 100.0
+        assert row['min'] == 50.0
+
+    def test_to_db_row(self):
+        """BidResultDTO.to_db_row should return dict with all fields."""
+        dto = BidResultDTO(
+            bid_window_id='bw-123',
+            class_id='class-456',
+            vacancy=30,
+            opening_vacancy=40,
+            before_process_vacancy=35,
+            dice=1,
+            after_process_vacancy=25,
+            enrolled_students=15,
+            median=100.0,
+            min=50.0
+        )
+
+        row = dto.to_db_row()
+        assert row['bid_window_id'] == 'bw-123'
+        assert row['class_id'] == 'class-456'
+        assert row['median'] == 100.0
+
+    def test_optional_fields_with_none(self):
+        """BidResultDTO should handle None for optional fields."""
+        dto = BidResultDTO(
+            bid_window_id='bw-123',
+            class_id='class-456',
+            vacancy=None,
+            opening_vacancy=None,
+            before_process_vacancy=None,
+            dice=None,
+            after_process_vacancy=None,
+            enrolled_students=None,
+            median=None,
+            min=None
+        )
+
+        assert dto.vacancy is None
+        assert dto.median is None
+        assert dto.min is None
+
+        csv_row = dto.to_csv_row()
+        assert csv_row['vacancy'] is None
+        assert csv_row['median'] is None

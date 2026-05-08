@@ -283,7 +283,85 @@ class TestBidWindowProcessor:
 
         new_windows, updated_windows = processor.process()
 
-        # Cache should be updated
+        # Cache should be updated with dict entry (not just an integer ID)
         expected_key = ('AY202526T1', '1', 1)
         assert expected_key in cache
-        assert cache[expected_key] == 1
+        assert isinstance(cache[expected_key], dict)
+        assert cache[expected_key]['id'] == 1
+        assert cache[expected_key]['acad_term_id'] == 'AY202526T1'
+        assert cache[expected_key]['round'] == '1'
+        assert cache[expected_key]['window'] == 1
+
+
+class TestBidWindowParseBiddingWindowIntegration:
+    """Tests verifying parse_bidding_window is called correctly for all window formats."""
+
+    def test_incoming_freshmen_window(self):
+        """'Incoming Freshmen Rnd 1 Win 4' should parse to round='1F', window=4."""
+        df = pd.DataFrame([
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Incoming Freshmen Rnd 1 Win 4', 'course_code': 'CS101', 'section': 'G1'}
+        ])
+
+        processor = BidWindowProcessor(
+            raw_data=df,
+            bid_window_cache={},
+            logger=MagicMock()
+        )
+
+        new_windows, _ = processor.process()
+
+        assert len(new_windows) == 1
+        assert new_windows[0].round == '1F'
+        assert new_windows[0].window == 4
+
+    def test_incoming_exchange_window(self):
+        """'Incoming Exchange Rnd 1C Win 1' should parse correctly."""
+        df = pd.DataFrame([
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Incoming Exchange Rnd 1C Win 1', 'course_code': 'CS101', 'section': 'G1'}
+        ])
+
+        processor = BidWindowProcessor(
+            raw_data=df,
+            bid_window_cache={},
+            logger=MagicMock()
+        )
+
+        new_windows, _ = processor.process()
+
+        assert len(new_windows) == 1
+        assert new_windows[0].round == '1C'
+        assert new_windows[0].window == 1
+
+    def test_abbreviated_window_format(self):
+        """'Rnd 1A Win 2' should parse to round='1A', window=2."""
+        df = pd.DataFrame([
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'Rnd 1A Win 2', 'course_code': 'CS101', 'section': 'G1'}
+        ])
+
+        processor = BidWindowProcessor(
+            raw_data=df,
+            bid_window_cache={},
+            logger=MagicMock()
+        )
+
+        new_windows, _ = processor.process()
+
+        assert len(new_windows) == 1
+        assert new_windows[0].round == '1A'
+        assert new_windows[0].window == 2
+
+    def test_unparseable_window_skipped(self):
+        """Unparseable bidding_window text should result in no new window."""
+        df = pd.DataFrame([
+            {'acad_term_id': 'AY202526T1', 'bidding_window': 'xyz', 'course_code': 'CS101', 'section': 'G1'}
+        ])
+
+        processor = BidWindowProcessor(
+            raw_data=df,
+            bid_window_cache={},
+            logger=MagicMock()
+        )
+
+        new_windows, _ = processor.process()
+
+        assert len(new_windows) == 0

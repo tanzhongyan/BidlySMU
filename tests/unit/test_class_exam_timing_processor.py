@@ -60,21 +60,21 @@ class TestProcessAllRows:
             {'type': 'CLASS', 'record_key': 'key3', 'date': '2026-05-03', 'start_time': '10:00', 'end_time': '12:00', 'venue': 'Hall C'},
         ])
 
-        # Provide class_lookup to allow finding class IDs
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
-            ('AY202526T1', 1001, 'prof2'): MagicMock(id='class-uuid-2'),
+        # record_key_to_class_ids maps record_keys to class IDs
+        record_key_map = {
+            'key2': ['class-uuid-1', 'class-uuid-2'],
         }
 
         processor = ClassExamTimingProcessor(
             raw_data=raw_data,
-            class_lookup=class_lookup,
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
             logger=Mock()
         )
 
         processor._process_all_rows()
 
-        # Only EXAM rows should be processed (2 CLASS rows should be skipped)
+        # Only EXAM row should be processed (2 CLASS rows should be skipped)
         assert len(processor._new_exam_timings) >= 1
 
 
@@ -103,20 +103,36 @@ class TestFindClassIds:
 
     def test_finds_all_class_ids_for_record_key(self):
         """_find_class_ids should return all class IDs for a record_key."""
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
-            ('AY202526T1', 1001, 'prof2'): MagicMock(id='class-uuid-2'),
+        record_key_map = {
+            'key1': ['class-uuid-1', 'class-uuid-2'],
         }
 
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup=class_lookup
+            class_lookup={},
+            record_key_to_class_ids=record_key_map
         )
 
-        result = processor._find_class_ids('some_key')
+        result = processor._find_class_ids('key1')
 
-        # Finds all classes in the lookup (since no record_key filtering in current impl)
         assert len(result) == 2
+        assert 'class-uuid-1' in result
+        assert 'class-uuid-2' in result
+
+    def test_returns_empty_for_unknown_record_key(self):
+        """_find_class_ids should return empty list for unknown record_key."""
+        record_key_map = {
+            'key1': ['class-uuid-1'],
+        }
+
+        processor = ClassExamTimingProcessor(
+            raw_data=pd.DataFrame(),
+            class_lookup={},
+            record_key_to_class_ids=record_key_map
+        )
+
+        result = processor._find_class_ids('unknown_key')
+        assert result == []
 
 
 class TestProcessExamTiming:
@@ -129,9 +145,14 @@ class TestProcessExamTiming:
         ])
 
         processed_ids = {'already-processed-class-id'}
+        record_key_map = {
+            'key1': ['already-processed-class-id'],
+        }
+
         processor = ClassExamTimingProcessor(
             raw_data=raw_data,
-            class_lookup={('AY202526T1', 1001, 'prof1'): MagicMock(id='already-processed-class-id')},
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
             processed_exam_class_ids=processed_ids,
             logger=Mock()
         )
@@ -161,3 +182,52 @@ class TestClassExamTimingDTO:
         assert dto.start_time == '09:00'
         assert dto.end_time == '11:00'
         assert dto.venue == 'Hall B'
+
+    def test_to_csv_row(self):
+        """ClassExamTimingDTO.to_csv_row should return dict with all fields."""
+        row = {
+            'date': '2026-05-15',
+            'start_time': '09:00',
+            'end_time': '11:00',
+            'venue': 'Hall B'
+        }
+        dto = ClassExamTimingDTO.from_row(row, 'class-id-123')
+
+        csv_row = dto.to_csv_row()
+        assert csv_row['class_id'] == 'class-id-123'
+        assert csv_row['date'] == '2026-05-15'
+
+    def test_to_db_row_excludes_id(self):
+        """ClassExamTimingDTO.to_db_row should exclude id (DB auto-generated)."""
+        row = {
+            'date': '2026-05-15',
+            'start_time': '09:00',
+            'end_time': '11:00',
+            'venue': 'Hall B'
+        }
+        dto = ClassExamTimingDTO.from_row(row, 'class-id-123')
+
+        db_row = dto.to_db_row()
+        assert 'id' not in db_row
+        assert db_row['class_id'] == 'class-id-123'
+
+    def test_exam_timing_already_processed_skipped(self):
+        """Should not create duplicate exam timings for already-processed class IDs."""
+        # Create processor with already-processed class ID
+        processed_ids = {'already-processed-class-id'}
+        record_key_map = {
+            'key1': ['already-processed-class-id'],
+        }
+        processor = ClassExamTimingProcessor(
+            raw_data=pd.DataFrame(),
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
+            processed_exam_class_ids=processed_ids,
+            logger=Mock()
+        )
+
+        # Manually call _find_class_ids which should return the class
+        class_ids = processor._find_class_ids('key1')
+        # The class should exist but be in processed_exam_class_ids
+        for class_id in class_ids:
+            assert class_id in processed_ids

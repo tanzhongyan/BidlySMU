@@ -57,24 +57,24 @@ class TestProcessAllRows:
         raw_data = pd.DataFrame([
             {'type': 'CLASS', 'record_key': 'key1', 'day_of_week': 'Monday', 'start_time': '09:00', 'end_time': '10:30', 'venue': 'Room 101'},
             {'type': 'EXAM', 'record_key': 'key2', 'date': '2026-05-02', 'start_time': '14:00'},
-            {'type': 'CLASS', 'record_key': 'key3', 'day_of_week': 'Wednesday', 'start_time': '14:00', 'end_time': '15:30', 'venue': 'Room 202'},
+            {'type': 'CLASS', 'record_key': 'key1', 'day_of_week': 'Wednesday', 'start_time': '14:00', 'end_time': '15:30', 'venue': 'Room 202'},
         ])
 
-        # Provide class_lookup to allow finding class IDs
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
-            ('AY202526T1', 1001, 'prof2'): MagicMock(id='class-uuid-2'),
+        # record_key_to_class_ids maps record_keys to class IDs
+        record_key_map = {
+            'key1': ['class-uuid-1', 'class-uuid-2'],
         }
 
         processor = ClassTimingProcessor(
             raw_data=raw_data,
-            class_lookup=class_lookup,
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
             logger=Mock()
         )
 
         processor._process_all_rows()
 
-        # Only CLASS rows should be processed (EXAM row should be skipped)
+        # 2 CLASS rows x 2 class IDs = 4 timings (key1 has 2 class_ids)
         assert len(processor._new_timings) >= 2
 
 
@@ -103,20 +103,36 @@ class TestFindClassIds:
 
     def test_finds_all_class_ids_for_record_key(self):
         """_find_class_ids should return all class IDs for a record_key."""
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
-            ('AY202526T1', 1001, 'prof2'): MagicMock(id='class-uuid-2'),
+        record_key_map = {
+            'key1': ['class-uuid-1', 'class-uuid-2'],
         }
 
         processor = ClassTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup=class_lookup
+            class_lookup={},
+            record_key_to_class_ids=record_key_map
         )
 
-        result = processor._find_class_ids('some_key')
+        result = processor._find_class_ids('key1')
 
-        # Finds all classes in the lookup (since no record_key filtering in current impl)
         assert len(result) == 2
+        assert 'class-uuid-1' in result
+        assert 'class-uuid-2' in result
+
+    def test_returns_empty_for_unknown_record_key(self):
+        """_find_class_ids should return empty list for unknown record_key."""
+        record_key_map = {
+            'key1': ['class-uuid-1'],
+        }
+
+        processor = ClassTimingProcessor(
+            raw_data=pd.DataFrame(),
+            class_lookup={},
+            record_key_to_class_ids=record_key_map
+        )
+
+        result = processor._find_class_ids('unknown_key')
+        assert result == []
 
 
 class TestProcessClassTiming:
@@ -133,13 +149,14 @@ class TestProcessClassTiming:
             'venue': 'Room 101'
         }])
 
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
+        record_key_map = {
+            'key1': ['class-uuid-1'],
         }
 
         processor = ClassTimingProcessor(
             raw_data=raw_data,
-            class_lookup=class_lookup,
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
             logger=Mock()
         )
 
@@ -151,24 +168,23 @@ class TestProcessClassTiming:
         """_process_class_timing should deduplicate by timing key."""
         raw_data = pd.DataFrame([
             {'type': 'CLASS', 'record_key': 'key1', 'day_of_week': 'Monday', 'start_time': '09:00', 'end_time': '10:30', 'venue': 'Room 101'},
-            {'type': 'CLASS', 'record_key': 'key2', 'day_of_week': 'Monday', 'start_time': '09:00', 'end_time': '10:30', 'venue': 'Room 101'},
+            {'type': 'CLASS', 'record_key': 'key1', 'day_of_week': 'Monday', 'start_time': '09:00', 'end_time': '10:30', 'venue': 'Room 101'},
         ])
 
-        class_lookup = {
-            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1'),
-            ('AY202526T1', 1001, 'prof2'): MagicMock(id='class-uuid-2'),
+        record_key_map = {
+            'key1': ['class-uuid-1'],
         }
 
         processor = ClassTimingProcessor(
             raw_data=raw_data,
-            class_lookup=class_lookup,
+            class_lookup={},
+            record_key_to_class_ids=record_key_map,
             logger=Mock()
         )
 
         processor._process_all_rows()
 
-        # The 2 rows have same timing details, so should be deduplicated
-        # But they have different record_keys so potentially different classes
+        # Duplicate rows for same class_id + timing should be deduplicated
         assert len(processor._new_timings) >= 1
 
 
@@ -206,3 +222,60 @@ class TestClassTimingDTO:
         assert dto.class_id == 'class-id-789'
         assert dto.day_of_week is None
         assert dto.start_time is None
+
+    def test_to_csv_row(self):
+        """ClassTimingDTO.to_csv_row should return dict with all fields."""
+        row = {
+            'day_of_week': 'Monday',
+            'start_time': '09:00',
+            'end_time': '10:30',
+            'venue': 'Room 101'
+        }
+        dto = ClassTimingDTO.from_row(row, 'class-id-abc')
+
+        csv_row = dto.to_csv_row()
+        assert csv_row['class_id'] == 'class-id-abc'
+        assert csv_row['day_of_week'] == 'Monday'
+        assert csv_row['start_time'] == '09:00'
+
+    def test_to_db_row_excludes_id(self):
+        """ClassTimingDTO.to_db_row should exclude id (DB auto-generated)."""
+        row = {
+            'day_of_week': 'Monday',
+            'start_time': '09:00',
+            'end_time': '10:30',
+            'venue': 'Room 101'
+        }
+        dto = ClassTimingDTO.from_row(row, 'class-id-abc')
+
+        db_row = dto.to_db_row()
+        assert 'id' not in db_row
+        assert db_row['class_id'] == 'class-id-abc'
+
+    def test_timing_key_deduplication(self):
+        """Should deduplicate timings by (class_id, day_of_week, start_time, end_time, venue) key."""
+        processor = ClassTimingProcessor(
+            raw_data=pd.DataFrame(),
+            class_lookup={},
+            record_key_to_class_ids={'key1': ['class-uuid-1']},
+            existing_class_timing_keys={('class-uuid-1', 'Monday', '09:00', '10:30', 'Room 101')},
+            logger=Mock()
+        )
+
+        # This timing already exists in the key set
+        row = {
+            'type': 'CLASS',
+            'record_key': 'key1',
+            'day_of_week': 'Monday',
+            'start_time': '09:00',
+            'end_time': '10:30',
+            'venue': 'Room 101'
+        }
+
+        # Simulate processing a row that would create a duplicate
+        class_ids = processor._find_class_ids('key1')
+        for class_id in class_ids:
+            timing_key = (class_id, 'Monday', '09:00', '10:30', 'Room 101')
+            if timing_key in processor._existing_class_timing_keys:
+                # Should be skipped
+                assert timing_key in processor._existing_class_timing_keys

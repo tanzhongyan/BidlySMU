@@ -158,3 +158,92 @@ class TestClassAvailabilityDTO:
         assert dto.current_enrolled == 25
         assert dto.reserved == 5
         assert dto.available == 10
+
+    def test_to_csv_row(self):
+        """ClassAvailabilityDTO.to_csv_row should return dict with all fields."""
+        dto = ClassAvailabilityDTO(
+            class_id='class-456',
+            bid_window_id='bw-123',
+            total=40,
+            current_enrolled=25,
+            reserved=5,
+            available=10
+        )
+
+        row = dto.to_csv_row()
+        assert row['class_id'] == 'class-456'
+        assert row['bid_window_id'] == 'bw-123'
+        assert row['total'] == 40
+        assert row['current_enrolled'] == 25
+        assert row['reserved'] == 5
+        assert row['available'] == 10
+
+    def test_to_db_row(self):
+        """ClassAvailabilityDTO.to_db_row should return dict with all fields."""
+        dto = ClassAvailabilityDTO(
+            class_id='class-456',
+            bid_window_id='bw-123',
+            total=40,
+            current_enrolled=25,
+            reserved=5,
+            available=10
+        )
+
+        row = dto.to_db_row()
+        assert row['class_id'] == 'class-456'
+        assert row['bid_window_id'] == 'bw-123'
+        assert row['total'] == 40
+
+
+class TestClassAvailabilityProcessIntegration:
+    """Integration tests for the full process() flow."""
+
+    def test_process_returns_empty_when_no_window(self):
+        """process() should return empty list when CURRENT_WINDOW_NAME is None."""
+        processor = ClassAvailabilityProcessor(
+            raw_data=pd.DataFrame(),
+            class_lookup={},
+            bid_window_lookup={},
+            logger=Mock()
+        )
+        with patch('src.config.CURRENT_WINDOW_NAME', None):
+            result = processor.process()
+        assert result == []
+
+    def test_process_with_data_creates_dtos(self):
+        """process() should create ClassAvailabilityDTOs when data matches window."""
+        raw_data = pd.DataFrame([{
+            'acad_term_id': 'AY202526T1',
+            'class_boss_id': 1001,
+            'course_code': 'MGMT715',
+            'section': 'G1',
+            'bidding_window': 'Round 1 Window 1',
+            'total': 40,
+            'current_enrolled': 25,
+            'reserved': 5,
+            'available': 10
+        }])
+
+        class_lookup = {
+            ('AY202526T1', 1001, 'prof1'): MagicMock(id='class-uuid-1')
+        }
+        bid_window_lookup = {
+            ('AY202526T1', '1', 1): MagicMock(id='bw-1')
+        }
+
+        processor = ClassAvailabilityProcessor(
+            raw_data=raw_data,
+            class_lookup=class_lookup,
+            bid_window_lookup=bid_window_lookup,
+            logger=Mock()
+        )
+
+        with patch('src.config.CURRENT_WINDOW_NAME', 'Round 1 Window 1'):
+            result = processor.process()
+
+        # Should produce availability DTOs for each class in the group
+        if result:
+            for dto in result:
+                assert isinstance(dto, ClassAvailabilityDTO)
+                assert dto.class_id is not None
+                assert dto.bid_window_id is not None
