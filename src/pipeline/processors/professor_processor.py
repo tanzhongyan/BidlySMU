@@ -96,9 +96,20 @@ class ProfessorProcessor(AbstractProcessor):
     - Updates boss_aliases when new variations are found for existing professors
     """
 
-    # Class constants
-    _LLM_RATE_LIMIT_SECONDS = 6
+    # LLM constants for surname refinement (new professors only)
+    _LLM_MODEL_NAME = "gemini-2.5-flash"
     _LLM_BATCH_SIZE = 50
+    _LLM_RATE_LIMIT_SECONDS = 6
+    _LLM_PROMPT = (
+        "You are an expert in academic name structures from around the world. "
+        "You will be given a JSON list of professor names. Your task is to identify "
+        "the primary surname for each name. You MUST return a single JSON array of "
+        "strings, where each string is the identified surname. The surname should be "
+        "in the same language/script as the input name. For Asian names (Chinese, Korean, "
+        "Japanese, Vietnamese), the surname is typically the first word. For Western names, "
+        "the surname is typically the last word. For South/Southeast Asian names with "
+        "patronymics (Singh, Kumar, Bin, Binte), identify the actual family surname."
+    )
 
     # ------------------------------------------------------------------------
     # Helper Functions (moved inside class - only used by ProfessorProcessor)
@@ -209,10 +220,6 @@ class ProfessorProcessor(AbstractProcessor):
         self._raw_data = raw_data
         self._professors_cache = professors_cache
         self._professor_lookup: Dict[str, Dict] = {}  # Built from cache during processing
-        self._llm_client = None
-        self._llm_model_name = "gemini-2.5-flash"
-        self._llm_batch_size = self._LLM_BATCH_SIZE
-        self._llm_prompt = None
         self._new_professors_dtos: List[ProfessorDTO] = []  # Session deduplication
         self._results_updated: List[ProfessorDTO] = []  # Updated professor DTOs from process()
         # Build set of valid professor IDs from DB cache for validation
@@ -226,13 +233,6 @@ class ProfessorProcessor(AbstractProcessor):
             valid_professor_ids=self._valid_professor_ids
         )
 
-    def set_llm_client(self, client, model_name: str, batch_size: int, prompt: str):
-        """Configure LLM client for batch normalization."""
-        self._llm_client = client
-        self._llm_model_name = model_name
-        self._llm_batch_size = batch_size
-        self._llm_prompt = prompt
-
     def process(self) -> Tuple[List[ProfessorDTO], List[ProfessorDTO]]:
         """Main entry point - returns (new_professors, updated_professors)."""
         self._logger.info("Processing professors...")
@@ -244,7 +244,7 @@ class ProfessorProcessor(AbstractProcessor):
         unique_professors, professor_variations = self._extract_unique_professors()
         self._logger.info(f"Found {len(unique_professors)} unique professor names")
 
-        # Step 3: Normalize all names using LLM (with fallback to rule-based)
+        # Step 3: Normalize all names using rule-based approach
         normalized_map = self._normalize_professors_batch(unique_professors)
 
         # Step 4: For each professor - run FULL resolution chain
@@ -252,7 +252,12 @@ class ProfessorProcessor(AbstractProcessor):
             unique_professors, normalized_map, professor_variations
         )
 
-        # Step 5: Save updated lookup to CSV (for human reference only)
+        # Step 5: Refine new professors' afterclass_name with LLM surname extraction
+        # Only runs on genuinely new professors (all 8 resolution strategies failed)
+        # Requires GEMINI_API_KEY env var; falls back to rule-based if unavailable
+        self._refine_new_professors_with_llm(results_new)
+
+        # Step 6: Save updated lookup to CSV (for human reference only)
         self._results_updated = results_updated
         self._save_professor_lookup_csv()
 
@@ -364,46 +369,53 @@ class ProfessorProcessor(AbstractProcessor):
     # ------------------------------------------------------------------------
 
     def _normalize_professors_batch(self, names: List[str]) -> Dict[str, Tuple[str, str]]:
-        """Normalize batch of names using LLM with rule-based fallback."""
+        """Normalize all names using rule-based approach.
+
+        LLM surname refinement is handled separately in _refine_new_professors_with_llm()
+        for new professors only (after the resolution chain identifies them).
+        """
         if not names:
             return {}
 
         normalized_map = {}
-
-        # Try LLM first
-        if self._llm_client and self._llm_prompt:
-            try:
-                normalized_map = self._call_llm_batch(names)
-                self._logger.info("Batch normalization completed using Gemini LLM.")
-            except Exception as e:
-                self._logger.warning(f"LLM normalization failed ({e}). Falling back to rule-based.")
-                normalized_map = {}
-
-        # Fallback to rule-based for ALL names (including any that failed LLM)
-        if not normalized_map:
-            for name in names:
-                normalized_map[name] = self._normalize_professor_name_fallback(name)
-            self._logger.info("Used rule-based normalization for all names.")
+        for name in names:
+            normalized_map[name] = self._normalize_professor_name_fallback(name)
+        self._logger.info("Used rule-based normalization for all names.")
 
         return normalized_map
 
-    def _call_llm_batch(self, names: List[str]) -> Dict[str, Tuple[str, str]]:
-        """Call LLM to normalize a batch of names."""
-        from google import genai
+    def _call_llm_batch(
+        self,
+        names: List[str],
+        client,
+        model_name: str,
+        prompt: str,
+        batch_size: int
+    ) -> Dict[str, Tuple[str, str]]:
+        """Call LLM to normalize a batch of names.
+
+        Args:
+            names: List of professor names to normalize
+            client: Initialized genai.Client instance
+            model_name: Gemini model name (e.g. "gemini-2.5-flash")
+            prompt: LLM prompt for surname extraction
+            batch_size: Number of names per API call
+        """
+        from google.genai import types
         normalized_map = {}
-        total_batches = (len(names) + self._llm_batch_size - 1) // self._llm_batch_size
+        total_batches = (len(names) + batch_size - 1) // batch_size
 
-        self._logger.info(f"Normalizing {len(names)} names in {total_batches} batches using '{self._llm_model_name}'...")
+        self._logger.info(f"Normalizing {len(names)} names in {total_batches} batches using '{model_name}'...")
 
-        for i in range(0, len(names), self._llm_batch_size):
-            batch_names = names[i:i + self._llm_batch_size]
-            batch_num = i // self._llm_batch_size + 1
+        for i in range(0, len(names), batch_size):
+            batch_names = names[i:i + batch_size]
+            batch_num = i // batch_size + 1
             self._logger.info(f"  -> Processing batch {batch_num} of {total_batches} ({len(batch_names)} names)...")
 
-            response = self._llm_client.models.generate_content(
-                model=self._llm_model_name,
-                contents=f"{self._llm_prompt}\n\n{json.dumps(batch_names)}",
-                config=genai.GenerateContentConfig(response_mime_type="application/json")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=f"{prompt}\n\n{json.dumps(batch_names)}",
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
 
             response_text = response.text
@@ -424,6 +436,82 @@ class ProfessorProcessor(AbstractProcessor):
             time.sleep(self._LLM_RATE_LIMIT_SECONDS)  # Rate limiting
 
         return normalized_map
+
+    def _refine_new_professors_with_llm(self, results_new: List[ProfessorDTO]) -> None:
+        """Use LLM to refine afterclass_name surnames for newly created professors.
+
+        Only called for professors that the 8-strategy resolution chain couldn't match
+        (genuinely new). Sends all new professor names in a single batched LLM call.
+        If GEMINI_API_KEY is not set or LLM fails, keeps rule-based afterclass_name.
+
+        Args:
+            results_new: List of newly created ProfessorDTOs to refine
+        """
+        if not results_new:
+            return
+
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            self._logger.info(
+                f"GEMINI_API_KEY not set, keeping rule-based afterclass_name "
+                f"for {len(results_new)} new professors"
+            )
+            return
+
+        try:
+            from google import genai
+            client = genai.Client(api_key=api_key)
+        except ImportError:
+            self._logger.warning(
+                "google-genai not installed, keeping rule-based afterclass_name "
+                "for new professors. Install with: pip install google-genai"
+            )
+            return
+
+        # Extract original scraped names for LLM
+        names_to_normalize = [dto.original_scraped_name for dto in results_new]
+
+        self._logger.info(
+            f"Refining {len(results_new)} new professor surnames via Gemini LLM..."
+        )
+
+        try:
+            llm_normalized = self._call_llm_batch(
+                names=names_to_normalize,
+                client=client,
+                model_name=self._LLM_MODEL_NAME,
+                prompt=self._LLM_PROMPT,
+                batch_size=self._LLM_BATCH_SIZE
+            )
+        except Exception as e:
+            self._logger.warning(
+                f"LLM surname refinement failed ({e}). "
+                f"Keeping rule-based afterclass_name for {len(results_new)} new professors."
+            )
+            return
+
+        # Update DTOs with LLM-corrected afterclass_name
+        refined_count = 0
+        for dto in results_new:
+            if dto.original_scraped_name in llm_normalized:
+                _, llm_afterclass_name = llm_normalized[dto.original_scraped_name]
+                if llm_afterclass_name != dto.name:
+                    self._logger.info(
+                        f"LLM refined afterclass_name: '{dto.name}' -> '{llm_afterclass_name}' "
+                        f"(original: '{dto.original_scraped_name}')"
+                    )
+                    dto.name = llm_afterclass_name
+                    dto.slug = re.sub(r'[^a-zA-Z0-9]+', '-', llm_afterclass_name.lower()).strip('-')
+                    refined_count += 1
+
+                    # Also update professor_lookup so resolution service gets corrected name
+                    for alias_key, lookup_data in self._professor_lookup.items():
+                        if lookup_data.get('database_id') == dto.id:
+                            lookup_data['afterclass_name'] = llm_afterclass_name
+
+        self._logger.info(
+            f"LLM surname refinement complete: {refined_count}/{len(results_new)} new professors updated"
+        )
 
     def _format_normalized_name(self, original_name: str, surname: str) -> Tuple[str, str]:
         """Format original name + identified surname into (boss_name, afterclass_name)."""

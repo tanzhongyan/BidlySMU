@@ -106,67 +106,78 @@
 ```
 BidlySMU/
 ├── src/                          # Python pipeline source code
-│   ├── config.py                 # Central configuration
-│   ├── base/                     # Base classes
-│   │   └── base_scraper.py       # Abstract BaseScraper with Smart Wait
+│   ├── config.py                 # PipelineConfig, parse_bidding_window, bidding schedules
+│   ├── requirements.txt
 │   ├── driver/                   # WebDriver management
-│   │   ├── driver_factory.py     # ChromeDriverFactory
-│   │   └── authenticator.py     # Authenticator interface + ManualLogin/AutomatedLogin
-│   ├── scraper/                  # Data collection (Step 1)
-│   │   ├── class_scraper.py      # Class information scraper
-│   │   ├── html_data_extractor.py # HTML data extractor
-│   │   ├── overall_results_scraper.py # Overall results scraper
-│   │   ├── coordinator.py        # ScraperCoordinator (wires all components)
-│   │   └── deprecated/V4/        # Deprecated scraper implementations
-│   ├── pipeline/                 # Processing & prediction (Step 2-3)
-│   │   ├── step_2_TableBuilder.py
-│   │   └── step_3_BidPrediction.py
-│   ├── logging/                  # Logging utilities
-│   │   └── logger.py             # LoggerFactory with Sentry integration
-│   ├── models/dto/               # Data Transfer Objects
-│   │   └── scraping_result.py    # ScrapingResult, ScraperError, ErrorType
-│   ├── parser/                   # Data parsing utilities
-│   │   ├── excel_writer.py
-│   │   └── encoding_handler.py
-│   └── utils/                    # Shared utilities
-│       ├── term_resolver.py      # Term code mapping utilities
-│       └── schedule_resolver.py  # Bidding round schedule utilities
+│   │   ├── driver_factory.py     # Chrome WebDriver creation
+│   │   └── authenticator.py      # BOSS automated login (TOTP)
+│   ├── db/                       # Database layer
+│   │   ├── adapters.py           # Psycopg2Adapter (PostgreSQL connection)
+│   │   └── database_helper.py    # Bulk INSERT/UPDATE, cache download
+│   ├── logging/
+│   │   └── logger.py             # Structured logging setup
+│   ├── pipeline/                 # Core processing engine
+│   │   ├── pipeline_coordinator.py  # Central orchestrator (3-phase execution)
+│   │   ├── transformer.py           # SMUBiddingTransformer (CatBoost features)
+│   │   ├── safety_factor_calculator.py  # T-distribution percentile multipliers
+│   │   ├── dtos/                    # Data Transfer Objects
+│   │   │   ├── acad_term_dto.py
+│   │   │   ├── bid_prediction_dto.py   # + SafetyFactorDTO
+│   │   │   ├── bid_result_dto.py
+│   │   │   ├── bid_window_dto.py
+│   │   │   ├── class_availability_dto.py
+│   │   │   ├── class_dto.py
+│   │   │   ├── course_dto.py
+│   │   │   ├── professor_dto.py
+│   │   │   └── timing_dto.py
+│   │   └── processors/              # 12 specialized processors
+│   │       ├── abstract_processor.py       # Base class (Template Method)
+│   │       ├── acad_term_processor.py
+│   │       ├── bid_prediction_processor.py
+│   │       ├── bid_result_processor.py
+│   │       ├── bid_window_processor.py
+│   │       ├── class_availability_processor.py
+│   │       ├── class_exam_timing_processor.py
+│   │       ├── class_processor.py          # Group reconciliation, soft deactivation
+│   │       ├── class_timing_processor.py
+│   │       ├── course_processor.py
+│   │       ├── professor_processor.py
+│   │       ├── professor_resolution_service.py  # 7-strategy name resolution
+│   │       └── safety_factor_processor.py
+│   └── scraper/                  # Data collection (disabled by default)
+│       ├── abstract_scraper.py    # Base scraper class
+│       ├── class_scraper.py       # BOSS class detail scraping
+│       ├── html_data_extractor.py # HTML → Excel extraction
+│       ├── overall_results_scraper.py  # BOSS bid results scraping
+│       └── scraper_coordinator.py # Scraper orchestration
 ├── scripts/
-│   └── run_pipeline.sh           # Pipeline orchestrator
-├── tests/                        # Unit tests
-│   ├── conftest.py               # Shared pytest fixtures
-│   └── unit/                     # Unit tests (116 tests)
-├── data/                         # Reference data
-│   ├── professor_lookup.csv
-│   └── safety_factor_table.csv
+│   └── run_pipeline.sh           # Pipeline entry point
 ├── models/                       # Trained CatBoost models (.cbm)
 ├── notebooks/                    # Jupyter notebooks
 ├── assets/                       # Images and static assets
 ├── docs/                         # Documentation
-├── script_input/                 # Input data (raw data, BOSS results)
-├── script_output/                # Output data (predictions, logs)
-├── deprecated/V4/                 # Old V4 scraper files (deprecated)
-├── db_cache/                     # Database cache
+├── script_input/                 # Input data (raw_data.xlsx, BOSS results, schedules)
+├── script_output/                # Output data (CSV predictions, verify/)
+├── deprecated/V4/                # Old V4 procedural scripts (deprecated)
+├── db_cache/                     # Pickle-serialized DB table cache
 ├── logs/                         # Pipeline logs
-├── requirements.txt
 └── README.md
 ```
 
-### **Key Files (OOP Refactored)**
-| File | Description |
-|------|-------------|
-| `scripts/run_pipeline.sh` | Orchestrates the full pipeline |
-| `src/config.py` | Central configuration (terms, rounds, schedules) |
-| `src/scraper/coordinator.py` | Wires DriverFactory + Authenticator + Scraper |
-| `src/scraper/class_scraper.py` | Scrapes class information from BOSS |
-| `src/scraper/html_data_extractor.py` | Extracts data from saved HTML files |
-| `src/scraper/overall_results_scraper.py` | Scrapes overall bidding results |
-| `src/base/base_scraper.py` | Abstract base with Smart Wait wrapper |
-| `src/driver/driver_factory.py` | ChromeDriver factory with headless support |
-| `src/driver/authenticator.py` | ManualLogin or AutomatedLogin (TOTP MFA) |
-| `src/logging/logger.py` | LoggerFactory with Sentry integration |
-| `src/models/dto/scraping_result.py` | ScrapingResult, ScraperError DTOs |
-| `tests/unit/` | 116 unit tests with pytest |
+### **Key Components**
+
+| Component | File | Description |
+|-----------|------|-------------|
+| **Pipeline Entry Point** | `scripts/run_pipeline.sh` | Loads config, runs PipelineCoordinator |
+| **Configuration** | `src/config.py` | `PipelineConfig.from_env()`, `parse_bidding_window()`, bidding schedules from JSON |
+| **Orchestrator** | `src/pipeline/pipeline_coordinator.py` | 3-phase execution, cross-processor lookups, dual output (CSV + DB) |
+| **Class Processing** | `src/pipeline/processors/class_processor.py` | Group-based reconciliation at `(acad_term_id, boss_id)` level, professor transitions, soft deactivation |
+| **Professor Resolution** | `src/pipeline/processors/professor_resolution_service.py` | 7-strategy name resolution chain (replaces V4's LLM approach) |
+| **Predictions** | `src/pipeline/processors/bid_prediction_processor.py` | Three-model CatBoost inference, entropy confidence, tree-subset uncertainty |
+| **Feature Engineering** | `src/pipeline/transformer.py` | `SMUBiddingTransformer` — course code decomposition, day-of-week encoding, instructor mapping |
+| **Safety Factors** | `src/pipeline/safety_factor_calculator.py` | T-distribution fitting on residuals, percentile multipliers 1-99 |
+| **Database Helper** | `src/db/database_helper.py` | Bulk INSERT/UPDATE via `execute_batch`, cache download from PostgreSQL |
+| **Data Collection** | `src/scraper/` | BOSS scraping (class details, HTML extraction, overall results) |
 
 ---
 
@@ -244,40 +255,34 @@ success = scraper.run_full_scraping_process(
 
 ---
 
-## **7. AI-Powered Professor Name Normalization**
+## **7. Professor Name Resolution**
 
-The pipeline uses **Google Gemini 2.5 Flash** (free tier) to normalize professor names from various formats into standardized surnames for database matching.
+### **V4: LLM-Based Surname Extraction (Deprecated)**
 
-### **Setup**
+V4 used **Google Gemini 2.5 Flash** to identify the primary surname from professor names for database matching. The LLM received a JSON list of names and returned a corresponding list of surnames:
 
-1. **Get a Gemini API Key** (free):
-   - Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
-   - Create a new API key
-   - The free tier includes 1,500 requests/day for Gemini 2.5 Flash
+- **Prompt**: *"You are an expert in academic name structures from around the world. You will be given a JSON list of professor names. Your task is to identify the primary surname for each name."*
+- **Batch size**: 50 names per API call
+- **Example**: `"Dr. John Smith Jr."` → `"Smith"`, `"ZHANG WEI"` → `"ZHANG"`
+- The extracted surname was then used to match against existing professors in the database
+- Required `GEMINI_API_KEY` environment variable and `google-genai` dependency
+- Fell back to rule-based normalization (Asian surname databases + Western given names) if LLM was unavailable
 
-2. **Configure environment variable** in `.env`:
-   ```bash
-   GEMINI_API_KEY=your_gemini_api_key_here
-   ```
+### **V5: DB-Based 7-Strategy Resolution Chain (Current)**
 
-3. **Install dependencies** (already in requirements.txt):
-   ```bash
-   pip install google-genai
-   ```
+V5 replaces the LLM approach entirely with `ProfessorResolutionService` — a deterministic, DB-based resolution chain with no external API dependencies:
 
-### **How It Works**
+| Strategy | Description |
+|----------|--------------|
+| 1. Direct lookup | Exact match in `boss_name_upper → professor_id` map |
+| 2. Variation lookup | Name variations (remove commas, normalize spaces, reorder "LAST, FIRST" ↔ "FIRST LAST") |
+| 3. Full lookup | Match against `database_id` in full professor records |
+| 4. Boss alias lookup | Match via `boss_aliases` field (alternate scraped name forms) |
+| 5. Subset matching | Partial word match (e.g., "JOHN DOE" matches "JOHN DOE SMITH") — requires ≥2 words |
+| 6. New professors | Session-created professors not yet in DB cache |
+| 7. No match | Returns None — professor will be created as new record |
 
-- The `src/pipeline/step_2_TableBuilder.py` script uses Gemini LLM to identify surnames from various name formats
-- Example: `"Dr. John Smith Jr."` → `"Smith"`
-- Processes names in batches of 50 for efficiency
-- Falls back to rule-based normalization if LLM is unavailable
-
-### **Configuration**
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `llm_model_name` | `gemini-2.5-flash` | Gemini model version |
-| `llm_batch_size` | `50` | Names processed per API call |
+**Trade-off**: Simpler dependencies (no `GEMINI_API_KEY` or `google-genai` needed) vs. potential duplicate new professors for ambiguous names (e.g., common names like "Rachel Tan"). The `professor_lookup.csv` file serves as a human-curated fallback for edge cases.
 
 ---
 

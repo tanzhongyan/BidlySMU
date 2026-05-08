@@ -7,11 +7,12 @@ export PYTHONIOENCODING=utf-8
 # ==============================================================================
 # SMU Bidding Data Pipeline Orchestrator
 # ==============================================================================
-# This script runs the data processing pipeline (Step 2 only).
-# Step 1 (scraping) is commented out as it requires Chrome/chromedriver.
+# This script runs the full data pipeline: scraping (Step 1) + processing (Step 2).
 #
 # Execution Flow:
-# 1. Step 1 (scraping): DISABLED - requires Chrome
+# 1. Step 1 (scraping): Parallel streams A & B (requires Chrome/chromedriver)
+#    - Stream A: class_scraper → html_data_extractor → raw_data.xlsx
+#    - Stream B: overall_results_scraper → overallBossResults/*.xlsx
 # 2. Step 2 runs: PipelineCoordinator
 #    - Phase 1: acad_term, courses, professors, bid_windows
 #    - Phase 2: classes, timings, availability, bid_results
@@ -22,9 +23,6 @@ export PYTHONIOENCODING=utf-8
 #
 # Coordinator:
 # - PipelineCoordinator in src/pipeline/pipeline_coordinator.py
-#
-# Note: Step 1 (scraping) requires Chrome/chromedriver and is disabled by default.
-# To enable, uncomment the Step 1 section below.
 # ==============================================================================
 
 # --- Setup ---
@@ -38,40 +36,34 @@ echo "============================================================"
 echo "🚀 Starting SMU Data Pipeline at $(date)"
 echo "============================================================"
 
-# --- Step 1: Scraping (DISABLED - requires Chrome) ---
-# The following Step 1 requires Chrome/chromedriver which may not be available.
-# To enable, ensure Chrome is installed and uncomment the section below.
-#
+# --- Step 1: Scraping (requires Chrome/chromedriver) ---
 # Stream A: class_scraper.py (1a) -> html_data_extractor.py (1b)
 # Stream B: overall_results_scraper.py (1c)
-#
-# (
-#     echo "[Stream A] Running class_scraper.py (1a)..."
-#     python -m src.scraper.class_scraper && \
-#     echo "[Stream A] Running html_data_extractor.py (1b)..." && \
-#     python -m src.scraper.html_data_extractor
-# ) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
-# PID_A=$!
-#
-# (
-#     echo "[Stream B] Running overall_results_scraper.py (1c)..."
-#     python -m src.scraper.overall_results_scraper
-# ) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
-# PID_B=$!
-#
-# wait $PID_A
-# CODE_A=$?
-# wait $PID_B
-# CODE_B=$?
-#
-# if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
-#     echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
-#     exit 1
-# fi
-# echo "✅ Step 1 (scraping) completed."
 
-echo "⚠️ Step 1 (scraping) is DISABLED - requires Chrome/chromedriver"
-echo "   Raw data must already exist in script_input/"
+(
+    echo "[Stream A] Running class_scraper.py (1a)..."
+    python -m src.scraper.class_scraper && \
+    echo "[Stream A] Running html_data_extractor.py (1b)..." && \
+    python -m src.scraper.html_data_extractor
+) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
+PID_A=$!
+
+(
+    echo "[Stream B] Running overall_results_scraper.py (1c)..."
+    python -m src.scraper.overall_results_scraper
+) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
+PID_B=$!
+
+wait $PID_A
+CODE_A=$?
+wait $PID_B
+CODE_B=$?
+
+if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
+    echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
+    exit 1
+fi
+echo "✅ Step 1 (scraping) completed."
 echo "------------------------------------------------------------"
 
 
