@@ -12,6 +12,26 @@ from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 class TestBidWindowDTO:
     """Tests for BidWindowDTO."""
 
+    def test_from_dict(self):
+        """from_dict should create BidWindowDTO from a dictionary."""
+        item = {'id': 5, 'acad_term_id': 'AY202526T3A', 'round': '2', 'window': 1}
+        dto = BidWindowDTO.from_dict(item)
+        assert dto.id == 5
+        assert dto.acad_term_id == 'AY202526T3A'
+        assert dto.round == '2'
+        assert dto.window == 1
+
+    def test_from_dict_coerces_types(self):
+        """from_dict should coerce types to handle inconsistent cache data."""
+        item = {'id': '5', 'acad_term_id': 'AY202526T3A', 'round': 2, 'window': '1'}
+        dto = BidWindowDTO.from_dict(item)
+        assert isinstance(dto.id, int)
+        assert dto.id == 5
+        assert isinstance(dto.round, str)
+        assert dto.round == '2'
+        assert isinstance(dto.window, int)
+        assert dto.window == 1
+
     def test_to_csv_row(self):
         dto = BidWindowDTO(
             id=1,

@@ -36,6 +36,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from src.scraper.abstract_scraper import AbstractScraper, StaleElementError
 from src.driver.authenticator import Authenticator
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
+from src.config import START_AY_TERM, ACAD_TERM_SHORT
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class ClassScraperConfig:
     base_url: str = "https://boss.intranet.smu.edu.sg"
     delay_between_requests: float = 1.0
     max_retries: int = 3
+    headless: bool = True
 
 
 class ClassScraper(AbstractScraper):
@@ -69,8 +71,6 @@ class ClassScraper(AbstractScraper):
         scraper = ClassScraper(config=config)
         result = scraper.scrape(acad_term_id="AY202526T3A")
     """
-
-    TERM_CODE_MAP = {'T1': '10', 'T2': '20', 'T3A': '31', 'T3B': '32'}
 
     def __init__(
         self,
@@ -153,15 +153,14 @@ class ClassScraper(AbstractScraper):
         schedule_key = self._config.start_ay_term
 
         # Determine round folder name - inlined get_bidding_round_info_for_term logic
+        import src.config as app_config
         schedule = self._config.bidding_schedules.get(schedule_key)
         round_folder = None
-        if schedule:
-            for results_date, *rest in schedule:
-                if now < results_date:
-                    suffix = rest[1] if len(rest) > 1 else None
-                    round_folder = f"{schedule_key}_{suffix}" if suffix else None
+        if schedule and app_config.CURRENT_WINDOW_NAME:
+            for results_date, window_name, abbrev in schedule:
+                if window_name == app_config.CURRENT_WINDOW_NAME:
+                    round_folder = f"{schedule_key}_{abbrev}"
                     break
-
 
         if not round_folder:
             self._logger.info(f"Not in a bidding window for {ay_term} at this time. Skipping.")
@@ -180,9 +179,10 @@ class ClassScraper(AbstractScraper):
 
         files_saved = 0
         try:
+            # Use START_AY_TERM directly (already in dash format from config)
             files_saved = self._scrape_range(
                 target_driver,
-                ay_term,
+                START_AY_TERM,
                 target_path,
             )
             total_files_saved += files_saved
@@ -212,15 +212,15 @@ class ClassScraper(AbstractScraper):
         """
         Scrape all class numbers in configured range.
 
+        Args:
+            ay_term: Academic term in dash format (e.g., '2025-26_T3A') - used for logging only
+            output_dir: Directory to save HTML files
+
         Returns:
             int: Number of files saved
         """
-        if not ay_term:
-            ay_term = "2025-26_T1"
-
-        ay, term = ay_term.split('_')
-        ay_short = ay[2:4]  # "25" from "2025"
-        term_code = self.TERM_CODE_MAP.get(term, '10')
+        # Use precomputed ACAD_TERM_SHORT for URL construction
+        acad_term_short = ACAD_TERM_SHORT
 
         files_saved = 0
         consecutive_empty = 0
@@ -231,8 +231,7 @@ class ClassScraper(AbstractScraper):
                 saved = self._scrape_single_class(
                     driver,
                     output_dir,
-                    ay_short,
-                    term_code,
+                    acad_term_short,
                     class_num,
                 )
 
@@ -256,23 +255,28 @@ class ClassScraper(AbstractScraper):
         self,
         driver: WebDriver,
         output_dir: Path,
-        ay_short: str,
-        term_code: str,
+        acad_term_short: str,
         class_num: int,
     ) -> Optional[bool]:
         """
         Scrape a single class number.
 
+        Args:
+            driver: WebDriver instance
+            output_dir: Directory to save HTML files
+            acad_term_short: Short format for BOSS URLs (e.g., '253A')
+            class_num: Class number to scrape
+
         Returns:
             True if saved, False if empty, None if error
         """
-        filename = f"SelectedAcadTerm={ay_short}{term_code}&SelectedClassNumber={class_num:04}.html"
+        filename = f"SelectedAcadTerm={acad_term_short}&SelectedClassNumber={class_num:04}.html"
         filepath = output_dir / filename
 
         url = (
             f"{self._config.base_url}/ClassDetails.aspx"
             f"?SelectedClassNumber={class_num:04}"
-            f"&SelectedAcadTerm={ay_short}{term_code}"
+            f"&SelectedAcadTerm={acad_term_short}"
             f"&SelectedAcadCareer=UGRD"
         )
 

@@ -42,14 +42,10 @@ class TestClassScraper:
         assert scraper._config is config
         assert scraper._driver is mock_webdriver
 
-    def test_term_code_map(self):
-        """ClassScraper should have correct TERM_CODE_MAP."""
-        assert ClassScraper.TERM_CODE_MAP == {
-            "T1": "10",
-            "T2": "20",
-            "T3A": "31",
-            "T3B": "32",
-        }
+    def test_term_code_map_removed(self):
+        """TERM_CODE_MAP has been removed - now using ACAD_TERM_SHORT from config."""
+        # TERM_CODE_MAP was replaced with ACAD_TERM_SHORT precomputed constant
+        assert not hasattr(ClassScraper, 'TERM_CODE_MAP')
 
     def test_config_property(self, mock_webdriver):
         """config property should return the config object."""
@@ -110,7 +106,7 @@ class TestScrapeSingleClass:
         scraper.wait_for_any_of = Mock()
 
         result = scraper._scrape_single_class(
-            mock_webdriver, output_dir, "25", "31", 1001
+            mock_webdriver, output_dir, "2531", 1001
         )
 
         # Should return True when file is saved
@@ -135,7 +131,7 @@ class TestScrapeSingleClass:
         scraper.wait_for_any_of = Mock()
 
         result = scraper._scrape_single_class(
-            mock_webdriver, output_dir, "25", "31", 1001
+            mock_webdriver, output_dir, "2531", 1001
         )
 
         assert result is False
@@ -156,7 +152,7 @@ class TestScrapeSingleClass:
         mock_webdriver.get.side_effect = Exception("Network error")
 
         result = scraper._scrape_single_class(
-            mock_webdriver, output_dir, "25", "31", 1001
+            mock_webdriver, output_dir, "2531", 1001
         )
 
         assert result is None
@@ -176,7 +172,7 @@ class TestScrapeSingleClass:
         mock_webdriver.page_source = "<html>Saved</html>"
         scraper.wait_for_any_of = Mock()
 
-        scraper._scrape_single_class(mock_webdriver, output_dir, "26", "10", 1234)
+        scraper._scrape_single_class(mock_webdriver, output_dir, "2610", 1234)
 
         # Verify URL was called with correct parameters
         call_args = mock_webdriver.get.call_args
@@ -208,7 +204,7 @@ class TestScrapeSingleClass:
         mock_webdriver.get.side_effect = get_side_effect
 
         result = scraper._scrape_single_class(
-            mock_webdriver, output_dir, "25", "31", 1001
+            mock_webdriver, output_dir, "2531", 1001
         )
 
         # Should have retried (get called twice)

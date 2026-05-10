@@ -36,41 +36,7 @@ echo "============================================================"
 echo "🚀 Starting SMU Data Pipeline at $(date)"
 echo "============================================================"
 
-# --- Step 1: Scraping (requires Chrome/chromedriver) ---
-# Stream A: class_scraper.py (1a) -> html_data_extractor.py (1b)
-# Stream B: overall_results_scraper.py (1c)
-
-(
-    echo "[Stream A] Running class_scraper.py (1a)..."
-    python -m src.scraper.class_scraper && \
-    echo "[Stream A] Running html_data_extractor.py (1b)..." && \
-    python -m src.scraper.html_data_extractor
-) > logs/step_1ab_scrape_and_extract_${TIMESTAMP}.log 2>&1 &
-PID_A=$!
-
-(
-    echo "[Stream B] Running overall_results_scraper.py (1c)..."
-    python -m src.scraper.overall_results_scraper
-) > logs/step_1c_scrape_overall_${TIMESTAMP}.log 2>&1 &
-PID_B=$!
-
-wait $PID_A
-CODE_A=$?
-wait $PID_B
-CODE_B=$?
-
-if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
-    echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
-    exit 1
-fi
-echo "✅ Step 1 (scraping) completed."
-echo "------------------------------------------------------------"
-
-
-# --- Step 2: Table Building (Direct Coordinator Call) ---
-echo " Kicking off Step 2: PipelineCoordinator..."
-
-# Generate log filename via Python (combines ACAD_TERM_ID and window code)
+# Generate log filename BEFORE Step 1 (combines ACAD_TERM_ID and window code)
 LOG_FILENAME=$(python -c "
 from src.config import ACAD_TERM_ID, CURRENT_WINDOW_NAME
 import re
@@ -99,6 +65,122 @@ wc = window_to_code(CURRENT_WINDOW_NAME)
 print(f'{ACAD_TERM_ID}_{wc}_{ts}.log')
 ")
 
+echo "Log file: logs/${LOG_FILENAME}"
+echo "------------------------------------------------------------"
+
+# --- Step 1: Scraping (requires Chrome/chromedriver) ---
+# Stream A: class_scraper.py (1a) -> html_data_extractor.py (1b)
+# Stream B: overall_results_scraper.py (1c)
+
+STREAM_A_LOG="logs/${LOG_FILENAME/.log/_1a_class_scrape.log}"
+STREAM_B_LOG="logs/${LOG_FILENAME/.log/_1b_overall_results.log}"
+
+(
+    echo "[Stream A] Running class_scraper.py (1a)..."
+    python -c "
+import sys
+from pathlib import Path
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from src.config import BIDDING_SCHEDULES, START_AY_TERM, ACAD_TERM_ID
+from src.driver.authenticator import AutomatedLogin, AuthCredentials
+from src.driver.driver_factory import ChromeDriverFactory
+from src.scraper.class_scraper import ClassScraper, ClassScraperConfig
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Starting class_scraper')
+
+config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
+driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
+credentials = AuthCredentials.from_environment()
+authenticator = AutomatedLogin(credentials)
+scraper = ClassScraper(config=config)
+driver = driver_factory.create()
+scraper.connect(driver)
+driver.get('https://boss.intranet.smu.edu.sg/')
+authenticator.login(driver)
+logger.info(f'Scraping term={ACAD_TERM_ID}')
+result = scraper.scrape(acad_term_id=ACAD_TERM_ID)
+logger.info(f'Scraping completed: {result}')
+driver.quit()
+" 2>&1
+
+    echo "[Stream A] Running html_data_extractor.py (1b)..."
+    python -c "
+import sys
+from pathlib import Path
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from src.scraper.html_data_extractor import HTMLDataExtractor
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Starting html_data_extractor')
+extractor = HTMLDataExtractor()
+result = extractor.scrape(output_path='script_input/raw_data.xlsx')
+logger.info(f'Extraction completed: {result}')
+" 2>&1
+) >> "$STREAM_A_LOG" 2>&1 &
+PID_A=$!
+
+(
+    echo "[Stream B] Running overall_results_scraper.py (1c)..."
+    python -c "
+import sys
+from pathlib import Path
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from src.config import BIDDING_SCHEDULES, START_AY_TERM
+from src.driver.authenticator import AutomatedLogin, AuthCredentials
+from src.driver.driver_factory import ChromeDriverFactory
+from src.scraper.overall_results_scraper import OverallResultsScraper, OverallResultsConfig
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Starting overall_results_scraper')
+
+config = OverallResultsConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
+driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
+credentials = AuthCredentials.from_environment()
+authenticator = AutomatedLogin(credentials)
+scraper = OverallResultsScraper(config=config)
+driver = driver_factory.create()
+scraper.connect(driver)
+driver.get('https://boss.intranet.smu.edu.sg/')
+authenticator.login(driver)
+logger.info(f'Scraping term={START_AY_TERM}')
+result = scraper.scrape(term=START_AY_TERM, bid_round=None, bid_window=None, output_dir='./script_input/overallBossResults', authenticator=None)
+logger.info(f'Scraping completed: {result}')
+driver.quit()
+" 2>&1
+) >> "$STREAM_B_LOG" 2>&1 &
+PID_B=$!
+
+wait $PID_A
+CODE_A=$?
+wait $PID_B
+CODE_B=$?
+
+if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
+    echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
+    exit 1
+fi
+echo "✅ Step 1 (scraping) completed."
+echo "------------------------------------------------------------"
+
+
+# --- Step 2: Table Building (Direct Coordinator Call) ---
+echo " Kicking off Step 2: PipelineCoordinator..."
+
+STEP2_LOG="logs/${LOG_FILENAME/.log/_2_process_pipeline.log}"
+
 python -c "
 import sys
 from src.config import BIDDING_SCHEDULES, START_AY_TERM, DB_CONFIG, PipelineConfig
@@ -111,11 +193,11 @@ config = PipelineConfig.from_env(
 )
 coordinator = PipelineCoordinator(config=config)
 coordinator.run()
-" 2>&1 | tee "logs/${LOG_FILENAME}"
+" 2>&1 | tee -a "$STEP2_LOG"
 
 if [ $? -ne 0 ]; then
     echo "❌ ERROR: PipelineCoordinator failed. Halting pipeline."
-    echo "   - Check logs/${LOG_FILENAME} for details."
+    echo "   - Check $STEP2_LOG for details."
     exit 1
 fi
 
@@ -123,4 +205,4 @@ echo "✅ Step 2 completed successfully."
 echo "============================================================"
 echo "🎉 SMU Data Pipeline finished successfully at $(date)"
 echo "============================================================"
-echo "📁 Full log saved to: logs/${LOG_FILENAME}"
+echo "📁 Step 2 log saved to: $STEP2_LOG"

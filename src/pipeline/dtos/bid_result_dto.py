@@ -17,7 +17,7 @@ class BidResultDTO:
         'vacancy': 'vacancy',
         'opening_vacancy': 'opening_vacancy',
         'before_process_vacancy': 'before_process_vacancy',
-        'dice': 'dice',
+        'd_i_c_e': 'd_i_c_e',
         'after_process_vacancy': 'after_process_vacancy',
         'enrolled_students': 'enrolled_students',
         'median': 'median',
@@ -29,7 +29,7 @@ class BidResultDTO:
     vacancy: Optional[int] = None
     opening_vacancy: Optional[int] = None
     before_process_vacancy: Optional[int] = None
-    dice: Optional[int] = None
+    d_i_c_e: Optional[int] = None
     after_process_vacancy: Optional[int] = None
     enrolled_students: Optional[int] = None
     median: Optional[float] = None
@@ -43,7 +43,7 @@ class BidResultDTO:
             'vacancy': self.vacancy,
             'opening_vacancy': self.opening_vacancy,
             'before_process_vacancy': self.before_process_vacancy,
-            'dice': self.dice,
+            'd_i_c_e': self.d_i_c_e,
             'after_process_vacancy': self.after_process_vacancy,
             'enrolled_students': self.enrolled_students,
             'median': self.median,
@@ -58,7 +58,7 @@ class BidResultDTO:
             'vacancy': self.vacancy,
             'opening_vacancy': self.opening_vacancy,
             'before_process_vacancy': self.before_process_vacancy,
-            'dice': self.dice,
+            'd_i_c_e': self.d_i_c_e,
             'after_process_vacancy': self.after_process_vacancy,
             'enrolled_students': self.enrolled_students,
             'median': self.median,
@@ -73,7 +73,7 @@ class BidResultDTO:
         vacancy: Optional[int] = None,
         opening_vacancy: Optional[int] = None,
         before_process_vacancy: Optional[int] = None,
-        dice: Optional[int] = None,
+        d_i_c_e: Optional[int] = None,
         after_process_vacancy: Optional[int] = None,
         enrolled_students: Optional[int] = None,
         median: Optional[float] = None,
@@ -86,7 +86,7 @@ class BidResultDTO:
             vacancy=vacancy,
             opening_vacancy=opening_vacancy,
             before_process_vacancy=before_process_vacancy,
-            dice=dice,
+            d_i_c_e=d_i_c_e,
             after_process_vacancy=after_process_vacancy,
             enrolled_students=enrolled_students,
             median=median,

@@ -9,6 +9,7 @@ import pickle
 from datetime import datetime
 from typing import List
 
+from src.config import ACAD_TERM_ID
 from src.logging.logger import get_logger
 from src.db.database_helper import DatabaseHelper
 from src.db.adapters import Psycopg2Adapter
@@ -23,6 +24,7 @@ from src.pipeline.processors.class_timing_processor import ClassTimingProcessor
 from src.pipeline.processors.course_processor import CourseProcessor
 from src.pipeline.processors.professor_processor import ProfessorProcessor
 from src.pipeline.processors.safety_factor_processor import SafetyFactorProcessor
+from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.course_dto import CourseDTO
 from src.pipeline.dtos.acad_term_dto import AcadTermDTO
@@ -269,6 +271,7 @@ class PipelineCoordinator:
         bid_window_processor = BidWindowProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
             bid_window_cache=self.db_cache.get('bid_window', {}),
+            expected_acad_term_id="AY" + self.config.start_ay_term.replace('-', '').replace('_', ''),
             logger=self._logger
         )
         bid_windows_new, bid_windows_updated = bid_window_processor.process()
@@ -415,7 +418,7 @@ class PipelineCoordinator:
         self._logger.info(f"✅ Generated {len(predictions)} bid predictions")
 
         safety_factor_processor = SafetyFactorProcessor(
-            expected_acad_term_id=self.config.start_ay_term,
+            expected_acad_term_id=ACAD_TERM_ID,  # BOSS format required for database FK
             cache_dir=self.config.cache_dir,
             logger=self._logger
         )
@@ -484,6 +487,8 @@ class PipelineCoordinator:
             return AcadTermDTO.from_dict(item) if hasattr(AcadTermDTO, 'from_dict') else None
         elif dimension == 'professors':
             return ProfessorDTO.from_dict(item) if hasattr(ProfessorDTO, 'from_dict') else None
+        elif dimension == 'bid_windows':
+            return BidWindowDTO.from_dict(item)
         return None
 
     def _create_course_dto(self, item: dict):
@@ -504,14 +509,32 @@ class PipelineCoordinator:
     def _build_composite_lookup(self, dimension: str, key_fields: List[str]) -> dict:
         """Build lookup using multiple fields as key.
 
+        Includes existing entries from DB cache first, then overlays
+        new/updated DTOs (which override cache entries with the same key).
+
         Args:
-            dimension: The dimension name in self.results
+            dimension: The dimension name in self.results and self.db_cache
             key_fields: List of DTO attribute names to use as composite key
 
         Returns:
             Dict mapping tuple of key_field values to DTO
         """
         lookup = {}
+
+        # First, add existing entries from database cache (if available)
+        cache = self.db_cache.get(dimension, {})
+        if isinstance(cache, dict):
+            for cache_key, item in cache.items():
+                if isinstance(item, dict):
+                    dto = self._dict_to_dto(dimension, item)
+                    if dto is not None:
+                        lookup_key = tuple(getattr(dto, f) for f in key_fields)
+                        lookup[lookup_key] = dto
+                elif hasattr(item, key_fields[0]):
+                    lookup_key = tuple(getattr(item, f) for f in key_fields)
+                    lookup[lookup_key] = item
+
+        # Then add new/updated DTOs (these override cache entries if same key)
         data = self.results.get(dimension, {})
         for dto in data.get('new', []) + data.get('updated', []):
             key = tuple(getattr(dto, f) for f in key_fields)
@@ -570,11 +593,13 @@ class PipelineCoordinator:
         return lookup
 
     def _get_overall_results_path(self) -> str:
-        """Get the path to overallBossResults.xlsx based on scraped data location."""
-        # Note: self.config.start_ay_term is already in dash format (START_AY_TERM from config)
+        """Get the path to overallBossResults.xlsx.
+
+        Uses dedicated overall_results_dir config instead of deriving
+        from input_file, so the path is stable regardless of input_file location.
+        """
         return os.path.join(
-            self.config.verify_dir,
-            'overallBossResults',
+            self.config.overall_results_dir,
             self.config.start_ay_term + '.xlsx'
         )
 

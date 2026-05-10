@@ -10,7 +10,7 @@ import os
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
-from src.config import CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, parse_bidding_window
+from src.config import CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, parse_bidding_window, ACAD_TERM_ID
 from src.pipeline.dtos.bid_result_dto import BidResultDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 from src.pipeline.dtos.class_dto import ClassDTO
@@ -76,6 +76,13 @@ class BidResultProcessor:
 
         overall_df = self._load_overall_results()
         if overall_df is None:
+            self._logger.warning(
+                f"overallBossResults file not found: '{self._overall_results_path}'. "
+                f"Previous window '{previous_window_name}' has no historical data to process. "
+                f"This is acceptable if the window genuinely has no bid results yet. "
+                f"If the BOSS Overall Results page shows data for this window, "
+                f"run the overall results scraper first to populate the file."
+            )
             return
 
         if 'Bidding Window' not in overall_df.columns:
@@ -90,12 +97,14 @@ class BidResultProcessor:
 
     def _process_previous_window_row(self, row: dict) -> None:
         """Process a single row from overall results for previous window."""
-        acad_term_id = row.get('Term', '')
+        # All rows in overallBossResults.xlsx are from the same term (single-term scrape)
+        # Use ACAD_TERM_ID directly - no per-row conversion needed
+        acad_term_id = ACAD_TERM_ID
         course_code = row.get('Course Code', '')
         section = str(row.get('Section', ''))
         bidding_window_str = row.get('Bidding Window', '')
 
-        if not acad_term_id or not course_code:
+        if not course_code:
             return
 
         round_str, window_num = parse_bidding_window(bidding_window_str, allow_abbrev=True)
@@ -105,6 +114,10 @@ class BidResultProcessor:
         window_key = (acad_term_id, round_str, window_num)
         bid_window_dto = self._bid_window_lookup.get(window_key)
         if not bid_window_dto:
+            self._logger.warning(
+                f"bid_window not found for key {window_key} - skipping row "
+                f"(course_code={course_code}, section={section})"
+            )
             return
 
         class_ids = self._find_all_class_ids_by_course_section(acad_term_id, course_code, section)
@@ -129,7 +142,7 @@ class BidResultProcessor:
                 'vacancy': vacancy,
                 'opening_vacancy': opening_vacancy,
                 'before_process_vacancy': before_process_vacancy,
-                'dice': dice,
+                'd_i_c_e': dice,
                 'after_process_vacancy': after_process_vacancy,
                 'enrolled_students': enrolled_students,
                 'median': median_bid,
@@ -143,7 +156,7 @@ class BidResultProcessor:
                     vacancy=vacancy,
                     opening_vacancy=opening_vacancy,
                     before_process_vacancy=before_process_vacancy,
-                    dice=dice,
+                    d_i_c_e=dice,
                     after_process_vacancy=after_process_vacancy,
                     enrolled_students=enrolled_students,
                     median=median_bid,
@@ -158,7 +171,7 @@ class BidResultProcessor:
                     vacancy=vacancy,
                     opening_vacancy=opening_vacancy,
                     before_process_vacancy=before_process_vacancy,
-                    dice=dice,
+                    d_i_c_e=dice,
                     after_process_vacancy=after_process_vacancy,
                     enrolled_students=enrolled_students,
                     median=median_bid,
@@ -237,7 +250,7 @@ class BidResultProcessor:
                 vacancy=total_val,
                 opening_vacancy=self._safe_int(row.get('opening_vacancy')),
                 before_process_vacancy=before_process,
-                dice=self._safe_int(row.get('d_i_c_e') or row.get('dice')),
+                d_i_c_e=self._safe_int(row.get('d_i_c_e') or row.get('dice')),
                 after_process_vacancy=self._safe_int(row.get('after_process_vacancy')),
                 enrolled_students=enrolled_val,
                 median=None,

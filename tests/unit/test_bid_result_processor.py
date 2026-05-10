@@ -35,6 +35,8 @@ class TestBidResultProcessor:
         assert processor._class_lookup == {}
         assert processor._bid_window_lookup == {}
 
+    @patch('src.pipeline.processors.bid_result_processor.CURRENT_WINDOW_NAME', None)
+    @patch('src.pipeline.processors.bid_result_processor.PREVIOUS_WINDOW_NAME', None)
     def test_process_returns_tuple(self):
         """process() should return (new_results, updated_results) tuple."""
         processor = BidResultProcessor(
@@ -48,8 +50,8 @@ class TestBidResultProcessor:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
-    @patch('src.config.CURRENT_WINDOW_NAME', None)
-    @patch('src.config.PREVIOUS_WINDOW_NAME', None)
+    @patch('src.pipeline.processors.bid_result_processor.CURRENT_WINDOW_NAME', None)
+    @patch('src.pipeline.processors.bid_result_processor.PREVIOUS_WINDOW_NAME', None)
     def test_process_handles_no_windows(self):
         """process() should return empty lists when no windows configured."""
         processor = BidResultProcessor(
@@ -177,7 +179,7 @@ class TestSafeConversions:
 class TestProcessPreviousWindow:
     """Tests for _process_previous_window method."""
 
-    @patch('src.config.PREVIOUS_WINDOW_NAME', None)
+    @patch('src.pipeline.processors.bid_result_processor.PREVIOUS_WINDOW_NAME', None)
     def test_skips_when_no_previous_window(self):
         """_process_previous_window should skip when PREVIOUS_WINDOW_NAME is None."""
         processor = BidResultProcessor(
@@ -190,6 +192,26 @@ class TestProcessPreviousWindow:
 
         processor._process_previous_window()
 
+        assert processor._new_bid_results == []
+        assert processor._updated_bid_results == []
+
+    @patch('src.pipeline.processors.bid_result_processor.PREVIOUS_WINDOW_NAME', 'Round 2 Window 1')
+    def test_warns_and_skips_when_previous_window_file_missing(self):
+        """_process_previous_window should log warning and skip when file is missing."""
+        mock_logger = Mock()
+        processor = BidResultProcessor(
+            raw_data=pd.DataFrame(),
+            overall_results_path='nonexistent_path.xlsx',
+            class_lookup={},
+            bid_window_lookup={},
+            logger=mock_logger
+        )
+
+        processor._process_previous_window()
+
+        # Should log a warning, not raise
+        mock_logger.warning.assert_called_once()
+        assert "overallBossResults file not found" in mock_logger.warning.call_args[0][0]
         assert processor._new_bid_results == []
         assert processor._updated_bid_results == []
 
@@ -296,7 +318,7 @@ class TestBidResultDTO:
             vacancy=30,
             opening_vacancy=40,
             before_process_vacancy=35,
-            dice=1,
+            d_i_c_e=1,
             after_process_vacancy=25,
             enrolled_students=15,
             median=100.0,
@@ -316,7 +338,7 @@ class TestBidResultDTO:
             vacancy=30,
             opening_vacancy=40,
             before_process_vacancy=35,
-            dice=1,
+            d_i_c_e=1,
             after_process_vacancy=25,
             enrolled_students=15,
             median=100.0,
@@ -338,7 +360,7 @@ class TestBidResultDTO:
             vacancy=30,
             opening_vacancy=40,
             before_process_vacancy=35,
-            dice=1,
+            d_i_c_e=1,
             after_process_vacancy=25,
             enrolled_students=15,
             median=100.0,
@@ -358,7 +380,7 @@ class TestBidResultDTO:
             vacancy=None,
             opening_vacancy=None,
             before_process_vacancy=None,
-            dice=None,
+            d_i_c_e=None,
             after_process_vacancy=None,
             enrolled_students=None,
             median=None,

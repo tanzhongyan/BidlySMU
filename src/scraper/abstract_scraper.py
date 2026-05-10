@@ -82,7 +82,8 @@ class AbstractScraper(ABC):
         self._driver = driver
         self._config = config or self.ScraperConfig()
         # Use injected logger or create one using LoggerFactory (supports Sentry)
-        self._logger = logger or get_logger(self.__class__.__name__)
+        # Use __name__ to get full module path (e.g., src.scraper.overall_results_scraper)
+        self._logger = logger or get_logger(__name__)
         self._max_retries = self._config.max_retries
 
     # ==================== Properties ====================

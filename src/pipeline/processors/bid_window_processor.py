@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from src.pipeline.processors.abstract_processor import AbstractProcessor
-from src.config import parse_bidding_window
+from src.config import parse_bidding_window, CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 
 
@@ -20,11 +20,13 @@ class BidWindowProcessor(AbstractProcessor):
         self,
         raw_data: pd.DataFrame,
         bid_window_cache: Dict[Tuple[str, str, int], int],
+        expected_acad_term_id: Optional[str] = None,
         logger: Optional[logging.Logger] = None
     ):
         super().__init__(logger)
         self._raw_data = raw_data
         self._bid_window_cache = bid_window_cache
+        self._expected_acad_term_id = expected_acad_term_id
 
     def process(self) -> Tuple[List[BidWindowDTO], List[BidWindowDTO]]:
         """Main entry point - returns (new_bid_windows, updated_bid_windows)."""
@@ -46,6 +48,13 @@ class BidWindowProcessor(AbstractProcessor):
 
             if acad_term_id and round_str and window_num:
                 found_windows[acad_term_id].add((round_str, window_num))
+
+        # Add explicit window names if defined
+        if self._expected_acad_term_id:
+            for explicit_window in filter(None, [CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME]):
+                round_str, window_num = parse_bidding_window(explicit_window, allow_abbrev=True)
+                if round_str and window_num:
+                    found_windows[self._expected_acad_term_id].add((round_str, window_num))
 
         # Determine starting ID for new windows
         max_id = 0

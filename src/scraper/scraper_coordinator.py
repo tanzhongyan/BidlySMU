@@ -31,7 +31,6 @@ class ScraperCoordinator:
 
     def __init__(
         self,
-        driver_factory: ChromeDriverFactory,
         authenticator: Optional[Authenticator],
         scraper: AbstractScraper,
         logger=None,
@@ -40,12 +39,13 @@ class ScraperCoordinator:
         Initialize coordinator.
 
         Args:
-            driver_factory: Factory to create WebDriver
             authenticator: Authenticator instance (ManualLogin or AutomatedLogin)
-            scraper: ScraperEngine implementation
+            scraper: ScraperEngine implementation (must have config.headless)
             logger: Optional logger
         """
-        self._driver_factory = driver_factory
+        # Create driver factory using headless config from scraper
+        headless = getattr(scraper, '_config', None) and getattr(scraper._config, 'headless', True)
+        self._driver_factory = ChromeDriverFactory(headless=headless, window_size="1920,1080")
         self._authenticator = authenticator
         self._scraper = scraper
         self._logger = logger or get_logger(self.__class__.__name__)

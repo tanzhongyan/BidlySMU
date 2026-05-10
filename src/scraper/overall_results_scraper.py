@@ -26,6 +26,7 @@ from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.authenticator import Authenticator
 from src.logging.logger import get_logger
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
+from src.config import TERM_DISPLAY_MAP, PREVIOUS_WINDOW_NAME, START_AY_TERM_DISPLAY, START_AY_TERM
 
 
 @dataclass
@@ -35,7 +36,7 @@ class OverallResultsConfig:
     start_ay_term: str  # REQUIRED
     base_url: str = "https://boss.intranet.smu.edu.sg/OverallResults.aspx"
     delay: int = 5
-    headless: bool = False
+    headless: bool = True
     page_size: int = 50
     max_retries: int = 3
 
@@ -55,19 +56,23 @@ class OverallResultsScraper(AbstractScraper):
         'Median Bid', 'Min Bid', 'Instructor', 'School/Department'
     ]
 
-    _TERM_DISPLAY_MAP = {
-        'T1': 'Term 1',
-        'T2': 'Term 2',
-        'T3A': 'Term 3A',
-        'T3B': 'Term 3B'
-    }
+    _TERM_DISPLAY_MAP = TERM_DISPLAY_MAP  # Use from config
 
-    @staticmethod
-    def _transform_term_format(short_term: str) -> str:
-        """Convert '2025-26_T1' -> '2025-26 Term 1' for BOSS website dropdown."""
-        year_part, term_part = short_term.split('_')
-        full_term_name = OverallResultsScraper._TERM_DISPLAY_MAP.get(term_part, term_part)
+    def _transform_term_format(self, short_term: str) -> str:
+        """Convert '2025-26_T3A' -> '2025-26 Term 3A' for BOSS website dropdown."""
+        year_part, term_part = short_term.split('_')  # '2025-26', 'T3A'
+        full_term_name = TERM_DISPLAY_MAP.get(term_part, term_part)  # 'Term 3A'
         return f"{year_part} {full_term_name}"
+
+    def _get_website_term(self, dash_term: str) -> str:
+        """Get the website display term for BOSS dropdown.
+
+        If dash_term matches START_AY_TERM, use pre-computed START_AY_TERM_DISPLAY.
+        Otherwise compute via _transform_term_format.
+        """
+        if dash_term == START_AY_TERM:
+            return START_AY_TERM_DISPLAY
+        return self._transform_term_format(dash_term)
 
     def __init__(
         self,
@@ -110,7 +115,7 @@ class OverallResultsScraper(AbstractScraper):
         )
 
         try:
-            website_term = self._transform_term_format(term)
+            website_term = self._get_website_term(term)
 
             # Auto-detect phase if not specified
             if bid_round is None or bid_window is None:
@@ -152,11 +157,29 @@ class OverallResultsScraper(AbstractScraper):
 
     def _determine_current_bidding_phase(self) -> Tuple[Optional[str], Optional[str]]:
         """
-        Determine the current bidding phase based on current time.
+        Determine the current bidding phase based on config or time.
+
+        Uses PREVIOUS_WINDOW_NAME from config as primary source (set via env or derived).
+        Falls back to time-based detection if config not set.
 
         Returns:
             tuple: (round, window) or (None, None) if no active phase
         """
+        # Primary: use PREVIOUS_WINDOW_NAME from config (set via TARGET_PREVIOUS_WINDOW env)
+        try:
+            prev_window = PREVIOUS_WINDOW_NAME
+            if prev_window:
+                self._logger.info(f"Using PREVIOUS_WINDOW_NAME from config: {prev_window}")
+                normalized = prev_window.replace("Incoming Exchange ", "").replace("Incoming Freshmen ", "")
+                normalized = normalized.replace("Rnd ", "Round ").replace("Win ", "Window ")
+
+                match = re.search(r'Round\s+(\d+[A-Z]*)\s+Window\s+(\d+)', normalized)
+                if match:
+                    return match.group(1), match.group(2)
+        except Exception:
+            pass
+
+        # Fallback: time-based detection
         current_time = datetime.now()
         self._logger.info(f"Current time: {current_time}")
 
@@ -208,6 +231,12 @@ class OverallResultsScraper(AbstractScraper):
         self._select_bid_round(bid_round)
         self._select_bid_window(bid_window)
         self._click_search()
+
+        # Check if no records found (acceptable empty state)
+        if self._is_no_records_found():
+            self._logger.info("No records found for the selected criteria. This may be expected if the bidding window has not yet published results.")
+            return []
+
         self._set_page_size_to_50()
         self._sort_by_bidding_window()
 
@@ -265,6 +294,16 @@ class OverallResultsScraper(AbstractScraper):
         # Save to Excel
         if all_data:
             self._save_to_excel(all_data, term, output_dir)
+        else:
+            # Always create output file (even if empty), if it doesn't exist
+            filepath = os.path.join(output_dir, self._generate_filename(term))
+            if not os.path.exists(filepath):
+                os.makedirs(output_dir, exist_ok=True)
+                empty_df = pd.DataFrame(columns=self.DESIRED_COLUMNS)
+                empty_df.to_excel(filepath, index=False, engine='openpyxl')
+                self._logger.info(f"No data found, created empty file: {filepath}")
+            else:
+                self._logger.info(f"No new data, existing file preserved: {filepath}")
 
         return all_data
 
@@ -371,8 +410,17 @@ class OverallResultsScraper(AbstractScraper):
 
         wait = WebDriverWait(self._driver, 30)
         wait.until(EC.presence_of_element_located((By.ID, "RadGrid_OverallResults_ctl00")))
-        self._logger.info("Search completed successfully")
         time.sleep(3)
+
+    def _is_no_records_found(self) -> bool:
+        """Check if the grid shows 'No records found' message."""
+        try:
+            no_record_elem = self._driver.find_element(By.ID, "lblNoRecord")
+            if no_record_elem.is_displayed():
+                return True
+        except NoSuchElementException:
+            pass
+        return False
 
     def _set_page_size_to_50(self) -> None:
         """Set page size to 50 records per page."""
@@ -612,13 +660,12 @@ class OverallResultsScraper(AbstractScraper):
     # ==================== Output Methods ====================
 
     def _generate_filename(self, term: str) -> str:
-        """Generate filename based on term."""
-        filename = term
-        for full_term, short_term in self.TERM_MAP.items():
-            if full_term in term:
-                filename = term.replace(full_term, short_term)
-                break
-        return filename + '.xlsx'
+        """Generate filename based on term (display format '2025-26 Term 3A' -> '2025-26_T3A.xlsx')."""
+        # Convert display format to dash format: '2025-26 Term 3A' -> '2025-26_T3A'
+        match = re.match(r'(\d{4})-(\d{2})\s+Term\s+([A-Z0-9]+)', term)
+        if match:
+            return f"{match.group(1)}-{match.group(2)}_{match.group(3)}.xlsx"
+        return term + '.xlsx'
 
     def _save_to_excel(self, data: List[dict], term: str, output_dir: str) -> None:
         """Save data to Excel file."""

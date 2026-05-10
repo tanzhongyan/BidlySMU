@@ -75,12 +75,95 @@ _END_YEAR = ACAD_TERM_ID[6:8]
 _TERM = ACAD_TERM_ID[8:]
 START_AY_TERM = f"{_START_YEAR}-{_END_YEAR}_{_TERM}"
 
+# Term display format mapping for BOSS UI (e.g., 'T3A' -> 'Term 3A')
+TERM_DISPLAY_MAP = {
+    'T1': 'Term 1',
+    'T2': 'Term 2',
+    'T3A': 'Term 3A',
+    'T3B': 'Term 3B'
+}
+
+def acad_term_id_to_display_format(acad_term_id: str) -> str:
+    """
+    Convert ACAD_TERM_ID (e.g., 'AY202526T3A') to display format (e.g., '2025-26 Term 3A').
+
+    Usage:
+        acad_term_id_to_display_format('AY202526T3A') -> '2025-26 Term 3A'
+    """
+    if not acad_term_id or len(acad_term_id) < 9:
+        return acad_term_id
+    start_year = acad_term_id[2:6]
+    end_year = acad_term_id[6:8]
+    term_code = acad_term_id[8:]
+    display_term = TERM_DISPLAY_MAP.get(term_code, term_code)
+    return f"{start_year}-{end_year} {display_term}"
+
+# START_AY_TERM_DISPLAY is the BOSS UI format (e.g., '2025-26 Term 3A')
+# Used by scrapers to interact with BOSS dropdown selectors
+START_AY_TERM_DISPLAY = acad_term_id_to_display_format(ACAD_TERM_ID)
+
+# Precomputed values for current term - derived once, used everywhere
+# Short format for BOSS URLs (e.g., "2531" for T1, "253A" for T3A)
+# Format: last 2 digits of start year + term code digits
+# Example: AY202526T3A -> "253A", AY202526T1 -> "251"
+ACAD_TERM_SHORT = f"{ACAD_TERM_ID[4:6]}{_TERM[1:]}" if _TERM.startswith('T') else f"{ACAD_TERM_ID[4:6]}{_TERM}"
+
+def display_format_to_acad_term_id(display_format: str) -> str:
+    """
+    Convert display format (e.g., '2025-26 Term 3A') to ACAD_TERM_ID (e.g., 'AY202526T3A').
+
+    Usage:
+        display_format_to_acad_term_id('2025-26 Term 3A') -> 'AY202526T3A'
+    """
+    if not display_format:
+        return display_format
+
+    # Pattern: "2025-26 Term 3A" -> extract year, term code
+    match = re.match(r'(\d{4})-(\d{2})\s+Term\s+([A-Z0-9]+)', display_format)
+    if match:
+        start = match.group(1)
+        end = match.group(2)
+        term_code = match.group(3).upper()  # e.g., '3A', '1', '3B'
+        # Add T prefix if not present - '1' -> 'T1', '3A' -> 'T3A'
+        if not term_code.startswith('T'):
+            term_code = 'T' + term_code
+        # Derive from current ACAD_TERM_ID pattern: AY + start + end + term_code
+        acad_term_id = f"AY{start}{end}{term_code}"
+        return acad_term_id
+
+    # Try dash format "2025-26_T3A"
+    match = re.match(r'(\d{4})-(\d{2})_([A-Z0-9]+)', display_format)
+    if match:
+        start = match.group(1)
+        end = match.group(2)
+        term_code = match.group(3).upper()
+        if not term_code.startswith('T'):
+            term_code = 'T' + term_code
+        acad_term_id = f"AY{start}{end}{term_code}"
+        return acad_term_id
+
+    return display_format
+
 # Lazy evaluation cache for expensive/time-dependent config values
 _config_cache: Dict[str, object] = {}
 
 
 def _compute_and_cache_window_names() -> None:
     """Compute CURRENT_WINDOW_NAME and PREVIOUS_WINDOW_NAME lazily on first access."""
+    
+    target_current = os.getenv('TARGET_CURRENT_WINDOW')
+    target_previous = os.getenv('TARGET_PREVIOUS_WINDOW')
+    
+    if target_current is not None or target_previous is not None:
+        def _parse_target(val):
+            if val is None: return None
+            if val.lower() == 'none' or val.strip() == '': return None
+            return val
+            
+        _config_cache['CURRENT_WINDOW_NAME'] = _parse_target(target_current)
+        _config_cache['PREVIOUS_WINDOW_NAME'] = _parse_target(target_previous)
+        return
+
     schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
     now = datetime.now()
 
@@ -95,9 +178,8 @@ def _compute_and_cache_window_names() -> None:
             break
 
     if current_window_name is None and schedule:
-        current_window_name = schedule[-1][1]
-        if len(schedule) > 1:
-            previous_window_name = schedule[-2][1]
+        current_window_name = None
+        previous_window_name = schedule[-1][1]
 
     _config_cache['CURRENT_WINDOW_NAME'] = current_window_name
     _config_cache['PREVIOUS_WINDOW_NAME'] = previous_window_name
@@ -137,6 +219,7 @@ class PipelineConfig:
         output_base: str = 'script_output',
         verify_dir: str = 'script_output/verify',
         cache_dir: str = 'db_cache',
+        overall_results_dir: str = 'script_input/overallBossResults',
     ):
         self.bidding_schedules = bidding_schedules
         self.start_ay_term = start_ay_term
@@ -145,6 +228,7 @@ class PipelineConfig:
         self.output_base = output_base
         self.verify_dir = verify_dir
         self.cache_dir = cache_dir
+        self.overall_results_dir = overall_results_dir
 
     @classmethod
     def from_env(cls, bidding_schedules: dict, start_ay_term: str, db_config: dict):

@@ -21,6 +21,16 @@ class BidWindowDTO:
     round: str  # '1', '1A', '1B', '1C', '1F', '2', '2A'
     window: int  # 1, 2, 3, etc.
 
+    @classmethod
+    def from_dict(cls, item: dict) -> 'BidWindowDTO':
+        """Create a BidWindowDTO from a dictionary (e.g., from database cache)."""
+        return cls(
+            id=int(item.get('id', 0)),
+            acad_term_id=str(item.get('acad_term_id', '')),
+            round=str(item.get('round', '')),
+            window=int(item.get('window', 0))
+        )
+
     def to_csv_row(self) -> dict:
         """Convert to CSV row for script_output."""
         return {self.COLUMNS[k]: getattr(self, k) for k in self.COLUMNS}

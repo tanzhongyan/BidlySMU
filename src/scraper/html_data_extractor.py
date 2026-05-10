@@ -624,33 +624,19 @@ class HTMLDataExtractor(AbstractScraper):
             return None
 
     def _extract_bidding_window_from_folder(self, folder_name: str) -> str:
-        """Extract bidding window from folder name."""
+        """Extract bidding window from folder name using BIDDING_SCHEDULES."""
         round_part = folder_name.split('_')[-1]
 
-        folder_to_window = {
-            'R1W1': 'Round 1 Window 1',
-            'R1AW1': 'Round 1A Window 1',
-            'R1AW2': 'Round 1A Window 2',
-            'R1AW3': 'Round 1A Window 3',
-            'R1BW1': 'Round 1B Window 1',
-            'R1BW2': 'Round 1B Window 2',
-            'R1CW1': 'Incoming Exchange Rnd 1C Win 1',
-            'R1CW2': 'Incoming Exchange Rnd 1C Win 2',
-            'R1CW3': 'Incoming Exchange Rnd 1C Win 3',
-            'R1FW1': 'Incoming Freshmen Rnd 1 Win 1',
-            'R1FW2': 'Incoming Freshmen Rnd 1 Win 2',
-            'R1FW3': 'Incoming Freshmen Rnd 1 Win 3',
-            'R1FW4': 'Incoming Freshmen Rnd 1 Win 4',
-            'R2W1': 'Round 2 Window 1',
-            'R2W2': 'Round 2 Window 2',
-            'R2W3': 'Round 2 Window 3',
-            'R2W4': 'Round 2 Window 4',
-            'R2AW1': 'Round 2A Window 1',
-            'R2AW2': 'Round 2A Window 2',
-            'R2AW3': 'Round 2A Window 3',
-        }
+        from src.config import BIDDING_SCHEDULES, START_AY_TERM
+        schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
+        for entry in schedule:
+            if len(entry) >= 3:
+                window_name = entry[1]
+                abbrev = entry[2]
+                if abbrev == round_part:
+                    return window_name
 
-        return folder_to_window.get(round_part, round_part)
+        return round_part  # fallback
 
     def _get_current_academic_term(self) -> Optional[str]:
         """

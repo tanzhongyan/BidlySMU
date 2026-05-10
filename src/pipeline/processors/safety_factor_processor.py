@@ -6,6 +6,7 @@ from typing import List, Optional
 import os
 from pathlib import Path
 
+from src.config import ACAD_TERM_ID
 from src.pipeline.dtos.bid_prediction_dto import SafetyFactorDTO
 from src.pipeline.safety_factor_calculator import SafetyFactorCalculator
 
@@ -19,17 +20,10 @@ class SafetyFactorProcessor:
         cache_dir: str = 'db_cache',
         logger: Optional[object] = None
     ):
+        # expected_acad_term_id should already be ACAD_TERM_ID (BOSS format)
         self._expected_acad_term_id = expected_acad_term_id
         self._cache_dir = cache_dir
         self._logger = logger
-
-    def _normalize_acad_term_id(self, acad_term_id: str) -> str:
-        """Convert dash format (2025-26_T3A) to underscore format (AY202526T3A)."""
-        if '-' in acad_term_id and '_' in acad_term_id:
-            parts = acad_term_id.split('_')
-            years = parts[0].split('-')
-            return f"AY{years[0]}{years[1]}{parts[1]}"
-        return acad_term_id
 
     def process(self) -> List['SafetyFactorDTO']:
         """Execute safety factor processing. Returns list of SafetyFactorDTOs."""
@@ -37,23 +31,17 @@ class SafetyFactorProcessor:
             self._logger.info(f"Safety factors already exist for {self._expected_acad_term_id} - skipping generation")
             return []
 
-        # Convert acad_term_id to underscore format for use in create_safety_factor_table
-        normalized_acad_term_id = self._normalize_acad_term_id(self._expected_acad_term_id)
-
+        # _expected_acad_term_id is already ACAD_TERM_ID (BOSS format)
         calculator = SafetyFactorCalculator(self._logger)
-        sf_df = calculator.create_safety_factor_table(normalized_acad_term_id)
+        sf_df = calculator.create_safety_factor_table(self._expected_acad_term_id)
 
         if sf_df.empty:
             return []
 
         safety_factors = []
         for _, row in sf_df.iterrows():
-            # Convert from dash format (2025-26_T3A) to underscore format (AY202526T3A)
+            # acad_term_id from create_safety_factor_table should already be in BOSS format
             acad_term_id = row['acad_term_id']
-            if '-' in acad_term_id and '_' in acad_term_id:
-                parts = acad_term_id.split('_')
-                years = parts[0].split('-')
-                acad_term_id = f"AY{years[0]}{years[1]}{parts[1]}"
 
             sf_dto = SafetyFactorDTO.from_row(
                 acad_term_id=acad_term_id,

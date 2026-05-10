@@ -393,18 +393,23 @@ class TestProcessMethod:
             'professor_name': ['Brand New Professor']
         })
 
-        processor = ProfessorProcessor(
-            raw_data=raw_data,
-            professors_cache={}
-        )
+        # Ensure GEMINI_API_KEY is not set so we get predictable rule-based normalization
+        with patch.dict('os.environ', {}, clear=True):
+            if 'GEMINI_API_KEY' in __import__('os').environ:
+                del __import__('os').environ['GEMINI_API_KEY']
 
-        new_profs, updated_profs = processor.process()
+            processor = ProfessorProcessor(
+                raw_data=raw_data,
+                professors_cache={}
+            )
 
-        assert len(new_profs) == 1
-        assert isinstance(new_profs[0], ProfessorDTO)
-        # afterclass_name normalizes last word to uppercase if identified as surname
-        assert new_profs[0].name == 'Brand New PROFESSOR'
-        assert len(updated_profs) == 0
+            new_profs, updated_profs = processor.process()
+
+            assert len(new_profs) == 1
+            assert isinstance(new_profs[0], ProfessorDTO)
+            # afterclass_name normalizes last word to uppercase if identified as surname
+            assert new_profs[0].name == 'Brand New PROFESSOR'
+            assert len(updated_profs) == 0
 
     def test_process_matches_existing_professor(self):
         raw_data = pd.DataFrame({

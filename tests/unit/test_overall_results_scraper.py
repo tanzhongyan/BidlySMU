@@ -35,7 +35,7 @@ class TestOverallResultsConfig:
         )
         assert config.base_url == "https://boss.intranet.smu.edu.sg/OverallResults.aspx"
         assert config.delay == 5
-        assert config.headless is False
+        assert config.headless is True
         assert config.page_size == 50
         assert config.max_retries == 3
 
