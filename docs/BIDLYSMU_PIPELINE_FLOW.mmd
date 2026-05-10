@@ -1,0 +1,149 @@
+flowchart TD
+    %% ============================================
+    %% BIDLYSMU OOP PIPELINE ARCHITECTURE FLOWCHART
+    %% ============================================
+
+    %% ========== PHASE 1: DATA COLLECTION ==========
+    subgraph Phase1["Phase 1: Data Collection - Parallel, disabled by default"]
+        direction TB
+
+        subgraph StreamA["Stream A: Class Details Pipeline"]
+            A1[BOSS Website] -->|Selenium| A2
+
+            subgraph A2_Sub["src/scraper/class_scraper.py"]
+                A2[Class Scraper] --> A3
+                A3[Full Scan - class numbers 1000-5000 - 300 consecutive empty = stop] --> A4
+                A4[Save HTML Files to script_input/classTimingsFull/]
+            end
+
+            A4 -->|HTML Files| A5
+
+            subgraph A5_Sub["src/scraper/html_data_extractor.py"]
+                A5[HTML Data Extractor] --> A6
+                A6[Selenium DOM Parsing - Encoding Fixes - Data Validation] --> A7
+                A7[Generate raw_data.xlsx - standalone + multiple sheets]
+            end
+        end
+
+        subgraph StreamB["Stream B: Historical Results"]
+            B1[BOSS OverallResults] -->|Selenium| B2
+
+            subgraph B2_Sub["src/scraper/overall_results_scraper.py"]
+                B2[Overall Results Scraper] --> B3
+                B3[Term-wise Scraping - Pagination up to 200 pages] --> B4
+                B4[Save Excel Files to script_input/overallBossResults/]
+            end
+        end
+
+        A7 -->|raw_data.xlsx| C1[Combined Raw Data]
+        B4 -->|overallBossResults| C1
+    end
+
+    %% ========== PHASE 2: PIPELINE PROCESSING ==========
+    subgraph Phase2["Phase 2: Pipeline Processing - Sequential via PipelineCoordinator"]
+        direction TB
+
+        C1 -->|raw_data.xlsx| PC
+
+        subgraph Config["Configuration and Cache"]
+            CF1["config.py - PipelineConfig, parse_bidding_window, BIDDING_SCHEDULES"]
+            CF2["db_cache/*.pkl - Pickle-serialized DB tables"]
+            CF3["professor_lookup.csv - Human-curated supplement"]
+        end
+
+        CF1 -->|PipelineConfig| PC
+        CF2 -->|Cache Data| PC
+
+        subgraph PC_Sub["src/pipeline/pipeline_coordinator.py"]
+            PC["PipelineCoordinator - Orchestrates all processors, Builds cross-processor lookups"]
+
+            subgraph DimPhase["Phase 1: Dimension Tables"]
+                direction LR
+                ATP[AcadTermProcessor] --> COP[CourseProcessor] --> PP[ProfessorProcessor] --> BWP[BidWindowProcessor]
+            end
+
+            subgraph FactPhase["Phase 2: Fact Tables"]
+                direction LR
+                CLP["ClassProcessor - Group reconciliation, Professor transitions, Soft deactivation"]
+                CLP --> CTP[ClassTimingProcessor]
+                CTP --> CETP[ClassExamTimingProcessor]
+                CETP --> CAP["ClassAvailabilityProcessor - Current window only"]
+                CAP --> BRP["BidResultProcessor - raw_data + overallBossResults"]
+            end
+
+            subgraph PredPhase["Phase 3: Predictions"]
+                direction LR
+                BPP["BidPredictionProcessor - 3 CatBoost models, Entropy confidence, Tree-subset uncertainty"]
+                BPP --> SFP["SafetyFactorProcessor - T-distribution fitting, Percentile multipliers 1-99"]
+            end
+
+            PC --> ATP
+            BWP -->|Lookups| CLP
+            BRP -->|class_lookup| BPP
+        end
+
+        PC_Sub --> D1[Dual Output]
+    end
+
+    CF3 -->|Professor Names| PP
+
+    %% ========== OUTPUTS ==========
+    subgraph Outputs["Pipeline Outputs"]
+        direction TB
+        D1 --> O1["CSV Files - script_output/"]
+        D1 --> O2["PostgreSQL Database - 11 tables"]
+    end
+
+    %% ========== ML MODELS ==========
+    subgraph Models["Pre-trained Models - loaded, not trained"]
+        direction TB
+        M1[production_classification_model.cbm]
+        M2[production_regression_median_model.cbm]
+        M3[production_regression_min_model.cbm]
+    end
+
+    M1 -->|Loaded by| BPP
+    M2 -->|Loaded by| BPP
+    M3 -->|Loaded by| BPP
+
+    %% ========== PROFESSOR RESOLUTION DETAIL ==========
+    subgraph ProfRes["Professor Resolution Service - 7-strategy chain"]
+        direction TB
+        PR1["1. Direct lookup - boss_name_upper to id"]
+        PR2["2. Variation lookup - Comma and space normalization"]
+        PR3["3. Full lookup - database_id match"]
+        PR4["4. Boss alias lookup - Alternate name forms"]
+        PR5["5. Subset matching - Partial word match"]
+        PR6["6. New professors - Session-created"]
+        PR7["7. No match - Returns None"]
+
+        PR1 --> PR2 --> PR3 --> PR4 --> PR5 --> PR6 --> PR7
+    end
+
+    PP -.->|Uses| ProfRes
+
+    %% ========== DATA FLOW CONNECTIONS ==========
+    Phase1 -->|raw_data.xlsx| Phase2
+    Phase2 --> Outputs
+
+    %% ========== DTO PATTERN ==========
+    subgraph DTOPattern["DTO Serialization Pattern"]
+        direction LR
+        DTO1[Processors produce DTOs] --> DTO2["to_csv_row - ISO dates, None-safe"] --> DTO3[CSV Output]
+        DTO1 --> DTO4["to_db_row - Native types, None-safe"] --> DTO5[PostgreSQL Output]
+    end
+
+    %% ========== STYLE DEFINITIONS ==========
+    classDef phase fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef processor fill:#f3e5f5,stroke:#4a148c,stroke-width:1px
+    classDef data fill:#fff3e0,stroke:#e65100,stroke-width:1px
+    classDef output fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef config fill:#fce4ec,stroke:#880e4f,stroke-width:1px
+    classDef model fill:#f1f8e9,stroke:#33691e,stroke-width:1px
+
+    class Phase1,Phase2 phase
+    class StreamA,StreamB processor
+    class C1,D1 data
+    class Outputs output
+    class Config,ProfRes config
+    class Models,DTOPattern model
