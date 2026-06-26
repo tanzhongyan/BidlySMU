@@ -286,7 +286,203 @@ V5 replaces the LLM approach entirely with `ProfessorResolutionService` — a de
 
 ---
 
-## **8. Crediting the Author**
+## **8. Cloud Deployment (AWS Lambda + ECS Fargate)**
+
+### Architecture Overview
+
+This pipeline uses a hybrid serverless architecture:
+
+1. **Monthly Scheduler (Lambda)**: Scrapes SMU SharePoint calendar, updates bidding schedules
+2. **Pipeline Execution (ECS Fargate)**: Runs the full scraping + processing pipeline
+
+### Prerequisites
+
+1. **AWS Account** with permissions for Lambda, ECS, ECR, Secrets Manager, EventBridge
+2. **Supabase Account** for PostgreSQL database and Storage
+3. **Docker** installed locally for building images
+
+### Required Configuration
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `bidding_schedules.json` | Supabase Storage | Bidding window schedules |
+| `professor_lookup.csv` | Supabase Storage | Professor name mappings (optional) |
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DB_HOST` | Yes | PostgreSQL host (Supabase) |
+| `DB_NAME` | Yes | Database name |
+| `DB_USER` | Yes | Database user |
+| `DB_PASSWORD` | Yes | Database password |
+| `DB_PORT` | Yes | Database port |
+| `BOSS_EMAIL` | Yes | SMU school email |
+| `BOSS_PASSWORD` | Yes | SMU account password |
+| `BOSS_MFA_SECRET` | Yes | Base32 TOTP secret from Microsoft Authenticator |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Yes | Supabase service role key |
+| `GEMINI_API_KEY` | No | Google Gemini API for surname refinement |
+| `SENTRY_DSN` | No | Sentry error monitoring |
+
+### Deployment Steps
+
+1. **Create ECR Repository**
+   ```bash
+   aws ecr create-repository --repository-name bidlysmu-pipeline
+   ```
+
+2. **Build and Push Docker Image**
+   ```bash
+   docker build -t bidlysmu-pipeline .
+   docker tag bidlysmu-pipeline:latest ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:latest
+   docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:latest
+   ```
+
+3. **Create Secrets in Secrets Manager**
+   - `bidlysmu-db-credentials`
+   - `bidlysmu-boss-credentials`
+   - `bidlysmu-api-keys`
+
+4. **Create Supabase Storage Bucket**
+   - Bucket name: `bidlysmu-files`
+   - Upload initial `bidding_schedules.json`
+
+5. **Deploy Lambda Function (Container Image)**
+   ```bash
+   cd lambda/monthly_scheduler
+   docker build -t bidlysmu-scheduler .
+   aws ecr create-repository --repository-name bidlysmu-scheduler
+   docker tag bidlysmu-scheduler:latest ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest
+   docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest
+   aws lambda create-function \
+     --function-name bidlysmu-scheduler \
+     --package-type Image \
+     --code ImageUri=ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest \
+     --role arn:aws:iam::account:role/lambda-execution-role \
+     --timeout 600 \
+     --memory-size 1024
+   ```
+
+6. **Register ECS Task Definition**
+   ```bash
+   aws ecs register-task-definition --cli-input-json file://deploy/ecs-task-definition.json
+   ```
+
+7. **Create Monthly EventBridge Schedule for Lambda**
+   ```bash
+   aws scheduler create-schedule \
+     --name bidlysmu-monthly-scheduler \
+     --schedule-expression "cron(0 8 1 * ? *)" \
+     --target '{"Arn": "arn:aws:lambda:region:account:function:bidlysmu-scheduler", "RoleArn": "arn:aws:iam::account:role/scheduler-role"}'
+   ```
+
+### Scraping Timing Logic
+
+- **R1W1 (first window)**: Scrape 2 weeks before window starts
+- **Subsequent windows**: Scrape 3 hours AFTER previous window's results are released
+  - Example: R1W1 results at Jul 8, 2pm → R1AW1 scrape at Jul 8, 5pm
+
+### Supabase Storage File Structure
+
+| Path | Purpose |
+|------|---------|
+| `schedules/bidding_schedules.json` | Bidding window schedules |
+| `schedules/existing_schedules.json` | EventBridge schedule tracking |
+| `input/{term}/{window}/raw_data.xlsx` | Scraped class data |
+| `input/{term}/{window}/overallBossResults/*.xlsx` | Bidding results |
+| `output/{term}/{window}/*.csv` | Pipeline output files |
+| `classTimingsFull/{acad_term}/{term_window}/*.html` | Scraped HTML files |
+
+### Cost Estimation
+
+| Component | Monthly Cost (Est.) |
+|-----------|---------------------|
+| Lambda (1 run/month, 10 min) | ~$0.01 |
+| ECS Fargate (4 windows × 3hr = 12hr/month) | ~$1.00 |
+| Secrets Manager (4 secrets) | ~$2.00 |
+| CloudWatch Logs (1GB) | ~$0.50 |
+| EventBridge Scheduler | ~$0.00 (free tier) |
+| **Total AWS** | **~$3.50/month** |
+
+**Supabase Storage:** Included in AfterClass plan (100GB, current usage 450MB)
+
+### Terraform Deployment (Recommended)
+
+Terraform configuration is provided for automated infrastructure deployment.
+
+**Files:**
+```
+deploy/terraform/
+├── main.tf              # Provider, data sources
+├── variables.tf         # Input variables
+├── outputs.tf           # Output values (ECR URLs, ARNs)
+├── ecr.tf               # ECR repositories
+├── ecs.tf               # ECS cluster, task definition
+├── lambda.tf            # Lambda function, EventBridge schedule
+├── iam.tf               # IAM roles and policies
+├── network.tf           # VPC, subnets (optional)
+└── terraform.tfvars.example  # Example configuration
+```
+
+**Quick Start:**
+
+1. **Copy and configure variables:**
+   ```bash
+   cd deploy/terraform
+   cp terraform.tfvars.example terraform.tfvars
+   # Edit terraform.tfvars with your values
+   ```
+
+2. **Create Secrets Manager secrets (before Terraform apply):**
+   ```bash
+   # Database credentials
+   aws secretsmanager create-secret \
+     --name bidlysmu-db-credentials \
+     --secret-string '{"DB_HOST":"...","DB_NAME":"...","DB_USER":"...","DB_PASSWORD":"...","DB_PORT":"5432"}'
+
+   # BOSS credentials
+   aws secretsmanager create-secret \
+     --name bidlysmu-boss-credentials \
+     --secret-string '{"email":"...","password":"...","mfa_secret":"..."}'
+
+   # API keys
+   aws secretsmanager create-secret \
+     --name bidlysmu-api-keys \
+     --secret-string '{"gemini_api_key":"...","supabase_url":"...","supabase_service_key":"...","sentry_dsn":"..."}'
+   ```
+
+3. **Initialize and apply Terraform:**
+   ```bash
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+
+4. **Build and push Docker images (use output URLs):**
+   ```bash
+   # Terraform will output the exact commands
+   terraform output docker_push_commands
+   ```
+
+5. **Upload initial files to Supabase Storage:**
+   - `schedules/bidding_schedules.json`
+   - `input/professor_lookup.csv` (optional)
+
+**Using Existing VPC:**
+
+Set in `terraform.tfvars`:
+```hcl
+create_vpc          = false
+vpc_name            = "your-vpc-name"
+security_group_name = "your-security-group-name"
+```
+
+**Cost Savings:** Terraform creates only the resources you need. Using an existing VPC saves ~$30/month on NAT Gateway costs.
+
+---
+
+## **9. Crediting the Author**
 
 If you use this project or its models in your work, please credit **Tan Zhong Yan** in the following way on GitHub:
 

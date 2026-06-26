@@ -16,6 +16,17 @@ load_dotenv()
 
 
 # ============================================================================
+# SUPABASE STORAGE CONFIGURATION (for cloud deployment)
+# ============================================================================
+
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
+
+# Flag to enable Supabase Storage integration (set via environment)
+USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', 'false').lower() == 'true'
+
+
+# ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
 
@@ -220,6 +231,9 @@ class PipelineConfig:
         verify_dir: str = 'script_output/verify',
         cache_dir: str = 'db_cache',
         overall_results_dir: str = 'script_input/overallBossResults',
+        use_supabase_storage: bool = False,
+        supabase_url: Optional[str] = None,
+        supabase_service_key: Optional[str] = None,
     ):
         self.bidding_schedules = bidding_schedules
         self.start_ay_term = start_ay_term
@@ -229,6 +243,9 @@ class PipelineConfig:
         self.verify_dir = verify_dir
         self.cache_dir = cache_dir
         self.overall_results_dir = overall_results_dir
+        self.use_supabase_storage = use_supabase_storage
+        self.supabase_url = supabase_url
+        self.supabase_service_key = supabase_service_key
 
     @classmethod
     def from_env(cls, bidding_schedules: dict, start_ay_term: str, db_config: dict):
@@ -236,6 +253,9 @@ class PipelineConfig:
             bidding_schedules=bidding_schedules,
             start_ay_term=start_ay_term,
             db_config=db_config,
+            use_supabase_storage=USE_SUPABASE_STORAGE,
+            supabase_url=SUPABASE_URL,
+            supabase_service_key=SUPABASE_SERVICE_KEY,
         )
 
 

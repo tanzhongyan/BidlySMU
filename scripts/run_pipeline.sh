@@ -10,6 +10,7 @@ export PYTHONIOENCODING=utf-8
 # This script runs the full data pipeline: scraping (Step 1) + processing (Step 2).
 #
 # Execution Flow:
+# 0. Step 0 (optional): Download files from Supabase Storage if USE_SUPABASE_STORAGE=true
 # 1. Step 1 (scraping): Parallel streams A & B (requires Chrome/chromedriver)
 #    - Stream A: class_scraper → html_data_extractor → raw_data.xlsx
 #    - Stream B: overall_results_scraper → overallBossResults/*.xlsx
@@ -17,6 +18,7 @@ export PYTHONIOENCODING=utf-8
 #    - Phase 1: acad_term, courses, professors, bid_windows
 #    - Phase 2: classes, timings, availability, bid_results
 #    - Phase 3: bid_predictions (with safety_factors)
+# 3. Step 3 (optional): Upload results to Supabase Storage if USE_SUPABASE_STORAGE=true
 #
 # All output is redirected to timestamped log files in the 'logs/' directory.
 # If any step fails, the script will exit immediately.
@@ -35,6 +37,71 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 echo "============================================================"
 echo "🚀 Starting SMU Data Pipeline at $(date)"
 echo "============================================================"
+
+# --- Step 0: Download files from Supabase Storage (if enabled) ---
+if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
+    echo "[Step 0] Downloading files from Supabase Storage..."
+
+    python -c "
+import os
+import sys
+from pathlib import Path
+
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from supabase import create_client
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Supabase Storage download started')
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+bucket = 'bidlysmu-files'
+
+# Download bidding_schedules.json
+try:
+    response = supabase.storage.from_(bucket).download('input/bidding_schedules.json')
+    Path('script_input/bidding_schedules.json').parent.mkdir(parents=True, exist_ok=True)
+    Path('script_input/bidding_schedules.json').write_bytes(response)
+    logger.info('Downloaded: input/bidding_schedules.json')
+except Exception as e:
+    logger.warning(f'Could not download bidding_schedules.json: {e}')
+
+# Download raw_data.xlsx (shared across all terms/windows)
+try:
+    response = supabase.storage.from_(bucket).download('input/raw_data.xlsx')
+    Path('script_input/raw_data.xlsx').write_bytes(response)
+    logger.info('Downloaded: input/raw_data.xlsx')
+except Exception as e:
+    logger.info(f'raw_data.xlsx not found (will be created by scraper): {e}')
+
+# Download overall results files (flat structure)
+try:
+    files = supabase.storage.from_(bucket).list('input/overallBossResults')
+    Path('script_input/overallBossResults').mkdir(parents=True, exist_ok=True)
+    for f in files:
+        if f['name'].endswith('.xlsx'):
+            remote_path = f'input/overallBossResults/{f[\"name\"]}'
+            local_path = Path('script_input/overallBossResults') / f['name']
+            response = supabase.storage.from_(bucket).download(remote_path)
+            local_path.write_bytes(response)
+            logger.info(f'Downloaded: {remote_path}')
+except Exception as e:
+    logger.info(f'overallBossResults not found (will be created by scraper): {e}')
+
+logger.info('Supabase Storage download completed')
+" 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "⚠️ WARNING: Step 0 (Supabase download) failed. Continuing with local files."
+    else
+        echo "✅ Step 0 (Supabase download) completed."
+    fi
+    echo "------------------------------------------------------------"
+fi
 
 # Generate log filename BEFORE Step 1 (combines ACAD_TERM_ID and window code)
 LOG_FILENAME=$(python -c "
@@ -202,6 +269,111 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "✅ Step 2 completed successfully."
+
+# --- Step 3: Upload results to Supabase Storage (if enabled) ---
+if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
+    echo "------------------------------------------------------------"
+    echo "[Step 3] Uploading results to Supabase Storage..."
+
+    python -c "
+import os
+import sys
+from pathlib import Path
+import json
+
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from supabase import create_client
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY, START_AY_TERM, CURRENT_WINDOW_NAME
+from src.logging.logger import get_logger
+import re
+
+logger = get_logger(__name__)
+logger.info('Supabase Storage upload started')
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+bucket = 'bidlysmu-files'
+
+def window_to_code(name):
+    if not name:
+        return 'UNKNOWN'
+    m = re.search(r'Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)', name, re.IGNORECASE)
+    if m:
+        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
+    return 'UNKNOWN'
+
+window_code = window_to_code(CURRENT_WINDOW_NAME)
+remote_dir = f'output/{START_AY_TERM}/{window_code}'
+
+# Upload generated CSV files from script_output (organized by term/window)
+output_dir = Path('script_output')
+for csv_file in output_dir.glob('*.csv'):
+    remote_path = f'{remote_dir}/{csv_file.name}'
+    try:
+        supabase.storage.from_(bucket).upload(
+            remote_path,
+            csv_file.read_bytes(),
+            {'content-type': 'text/csv', 'upsert': 'true'}
+        )
+        logger.info(f'Uploaded: {remote_path}')
+    except Exception as e:
+        logger.error(f'Failed to upload {csv_file.name}: {e}')
+
+# Upload raw_data.xlsx (shared file, flat structure)
+raw_data = Path('script_input/raw_data.xlsx')
+if raw_data.exists():
+    remote_path = 'input/raw_data.xlsx'
+    try:
+        supabase.storage.from_(bucket).upload(
+            remote_path,
+            raw_data.read_bytes(),
+            {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
+        )
+        logger.info(f'Uploaded: {remote_path}')
+    except Exception as e:
+        logger.error(f'Failed to upload raw_data.xlsx: {e}')
+
+# Upload bidding_schedules.json
+schedules_file = Path('script_input/bidding_schedules.json')
+if schedules_file.exists():
+    remote_path = 'input/bidding_schedules.json'
+    try:
+        supabase.storage.from_(bucket).upload(
+            remote_path,
+            schedules_file.read_bytes(),
+            {'content-type': 'application/json', 'upsert': 'true'}
+        )
+        logger.info(f'Uploaded: {remote_path}')
+    except Exception as e:
+        logger.error(f'Failed to upload bidding_schedules.json: {e}')
+
+# Upload overall results files (flat structure)
+overall_dir = Path('script_input/overallBossResults')
+if overall_dir.exists():
+    for xlsx_file in overall_dir.glob('*.xlsx'):
+        remote_path = f'input/overallBossResults/{xlsx_file.name}'
+        try:
+            supabase.storage.from_(bucket).upload(
+                remote_path,
+                xlsx_file.read_bytes(),
+                {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
+            )
+            logger.info(f'Uploaded: {remote_path}')
+        except Exception as e:
+            logger.error(f'Failed to upload {xlsx_file.name}: {e}')
+
+logger.info('Supabase Storage upload completed')
+" 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "⚠️ WARNING: Step 3 (Supabase upload) failed."
+    else
+        echo "✅ Step 3 (Supabase upload) completed."
+    fi
+fi
+
 echo "============================================================"
 echo "🎉 SMU Data Pipeline finished successfully at $(date)"
 echo "============================================================"

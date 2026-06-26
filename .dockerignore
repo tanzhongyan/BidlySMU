@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+*.pyc
+__pycache__
+.pytest_cache
+db_cache/*.pkl
+logs/*.log
+script_output/*.csv
+deprecated/
+notebooks/
+assets/
+*.md
+.claude/

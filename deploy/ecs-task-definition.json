@@ -1,0 +1,50 @@
+{
+  "family": "bidlysmu-pipeline-task",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT:role/BidlySMUTaskRole",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/BidlySMUExecutionRole",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "bidlysmu-pipeline",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:v1.0.0",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bidlysmu-pipeline",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {"name": "ACAD_TERM_ID", "value": "AY202526T3A"},
+        {"name": "PYTHONUTF8", "value": "1"},
+        {"name": "PYTHONIOENCODING", "value": "utf-8"}
+      ],
+      "secrets": [
+        {"name": "DB_HOST", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-db-credentials:DB_HOST"},
+        {"name": "DB_NAME", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-db-credentials:DB_NAME"},
+        {"name": "DB_USER", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-db-credentials:DB_USER"},
+        {"name": "DB_PASSWORD", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-db-credentials:DB_PASSWORD"},
+        {"name": "DB_PORT", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-db-credentials:DB_PORT"},
+        {"name": "BOSS_EMAIL", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-boss-credentials:email"},
+        {"name": "BOSS_PASSWORD", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-boss-credentials:password"},
+        {"name": "BOSS_MFA_SECRET", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-boss-credentials:mfa_secret"},
+        {"name": "GEMINI_API_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-api-keys:gemini_api_key"},
+        {"name": "SUPABASE_URL", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-api-keys:supabase_url"},
+        {"name": "SUPABASE_SERVICE_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-api-keys:supabase_service_key"},
+        {"name": "SENTRY_DSN", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT:secret:bidlysmu-api-keys:sentry_dsn"}
+      ],
+      "linuxParameters": {
+        "initProcessEnabled": true
+      }
+    }
+  ]
+}
