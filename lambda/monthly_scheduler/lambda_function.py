@@ -1,21 +1,14 @@
 """
-Monthly scheduler Lambda function.
+BidlySMU Lambda Scheduler — Dual-mode handler.
 
-Uses Truba JSON API to fetch BOSS bidding events without web scraping.
-No authentication or Selenium required - just HTTP requests.
+Mode 1 — Monthly calendar fetch (trigger: "monthly-schedule" or default):
+  1. Fetch BOSS events from Trumba JSON API
+  2. Update bidding_schedules.json in Supabase Storage
+  3. Create one-time EventBridge schedules that invoke THIS Lambda in Mode 2
 
-Architecture:
-1. Calls Truba JSON API to fetch calendar events (via TrubaClient)
-2. Extracts BOSS Results events
-3. Updates bidding_schedules.json in Supabase Storage (with deduplication)
-4. Creates EventBridge schedules for each bidding window (with deduplication)
-
-Usage:
-    This Lambda is deployed as a container image.
-    It runs monthly to:
-    1. Fetch BOSS events from Truba JSON API
-    2. Update bidding_schedules.json in Supabase Storage (with deduplication)
-    3. Create EventBridge schedules for each bidding window (with deduplication)
+Mode 2 — Pipeline run trigger (trigger: "run_pipeline"):
+  1. Receive acad_term_id + window from the schedule payload
+  2. Call ecs.run_task() with environment overrides for that term/window
 """
 import json
 import boto3
@@ -25,215 +18,128 @@ import re
 from datetime import datetime, timedelta
 from typing import Dict, List
 
-# Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Add src to path for Lambda container
 import sys
 sys.path.insert(0, "/app")
 
 from src.scraper.trumba_client import TrubaClient, TrubaConfig
-
-# Supabase
+from src.config import dash_format_to_acad_term_id
 from supabase import create_client
 
-# Configuration from environment
+# --- Environment configuration ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 TRUBA_API_URL = os.environ.get("TRUBA_API_URL", "https://www.trumba.com/calendars/SMU_RO_Acad.json")
 MONTHS_AHEAD = int(os.environ.get("MONTHS_AHEAD", "12"))
 
-# AWS configuration from environment
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 ECS_CLUSTER_ARN = os.environ.get("ECS_CLUSTER_ARN")
 ECS_TASK_DEF_ARN = os.environ.get("ECS_TASK_DEF_ARN")
-SCHEDULER_ROLE_ARN = os.environ.get("SCHEDULER_ROLE_ARN")
+ECS_CONTAINER_NAME = os.environ.get("ECS_CONTAINER_NAME", "bidlysmu-pipeline")
 SUBNETS = os.environ.get("SUBNETS", "").split(",") if os.environ.get("SUBNETS") else []
 SECURITY_GROUPS = os.environ.get("SECURITY_GROUPS", "").split(",") if os.environ.get("SECURITY_GROUPS") else []
-ECS_CONTAINER_NAME = os.environ.get("ECS_CONTAINER_NAME", "bidlysmu-pipeline")
+ASSIGN_PUBLIC_IP = os.environ.get("ASSIGN_PUBLIC_IP", "ENABLED")
+LAMBDA_INVOKE_ROLE_ARN = os.environ.get("LAMBDA_INVOKE_ROLE_ARN", "")
 
 
-def convert_term_to_acad_term_id(term: str) -> str:
+# =============================================================================
+# Term format conversion
+# =============================================================================
+
+
+
+# =============================================================================
+# Scrape time calculation
+# =============================================================================
+
+def calculate_scrape_time(windows: List, window_index: int) -> datetime:
+    """Calculate when to scrape based on timing logic.
+
+    - First window: 2 weeks before window starts
+    - Subsequent windows: 1 hour before the window opens (using actual
+      opens_at from Trumba), or 1 hour after previous results as fallback.
+      This guarantees the ECS pipeline completes before bidding starts.
     """
-    Convert Truba term format to BOSS database ACAD_TERM_ID format.
+    current_entry = windows[window_index]
+    current_results = datetime.fromisoformat(current_entry[0])
 
-    Args:
-        term: Truba format (e.g., "2026-27_T1", "2025-26_T3A")
+    if window_index == 0:
+        # First window: 2 weeks before it opens (gives time to fix issues)
+        window_start = current_results - timedelta(days=2)
+        return window_start - timedelta(weeks=2)
 
-    Returns:
-        BOSS database format (e.g., "AY202627T1", "AY202526T3A")
+    # Subsequent windows: prefer 1 hour before opens_at (extended format index 3)
+    if len(current_entry) >= 5 and current_entry[3]:
+        opens_at = datetime.fromisoformat(current_entry[3])
+        return opens_at - timedelta(hours=1)
 
-    Examples:
-        "2026-27_T1" -> "AY202627T1"
-        "2025-26_T3A" -> "AY202526T3A"
-        "2025-26_T3B" -> "AY202526T3B"
-    """
-    # Handle format like '2025-26_T1' or '2025-26_T3A'
-    match = re.match(r'(\d{4})-(\d{2})_T(\d+)([A-B]?)', term)
-    if match:
-        start_year = match.group(1)  # 2025
-        end_year_suffix = match.group(2)  # 26
-        term_num = match.group(3)  # 1, 2, 3
-        term_suffix = match.group(4)  # A, B, or empty
+    # Fallback: 1 hour after previous window's results
+    previous_results = datetime.fromisoformat(windows[window_index - 1][0])
+    return previous_results + timedelta(hours=1)
 
-        # Construct database format: AY + start_year + end_year_suffix + T + term_num + suffix
-        return f"AY{start_year}{end_year_suffix}T{term_num}{term_suffix}"
 
-    # If already in correct format or unknown format, return as-is
-    return term
-
+# =============================================================================
+# BiddingScheduleManager — deduplication for bidding_schedules.json
+# =============================================================================
 
 class BiddingScheduleManager:
-    """
-    Manages bidding_schedules.json in Supabase Storage with deduplication.
-    """
+    """Manages bidding_schedules.json in Supabase Storage."""
 
     def __init__(self, supabase_client, bucket: str = "bidlysmu-files"):
         self._supabase = supabase_client
         self._bucket = bucket
 
     def download_existing_schedules(self) -> Dict:
-        """Download existing bidding_schedules.json from Supabase Storage."""
         try:
             data = self._supabase.storage.from_(self._bucket).download(
                 "schedules/bidding_schedules.json"
             )
-            schedules = json.loads(data.decode('utf-8'))
-            logger.info(f"Downloaded {len(schedules)} terms from existing schedules")
-            return schedules
+            return json.loads(data.decode('utf-8'))
         except Exception as e:
             logger.warning(f"Could not download existing schedules: {e}")
             return {}
 
     def upload_schedules(self, schedules: Dict) -> None:
-        """Upload updated bidding_schedules.json to Supabase Storage."""
         content = json.dumps(schedules, indent=2).encode('utf-8')
         self._supabase.storage.from_(self._bucket).upload(
-            "schedules/bidding_schedules.json",
-            content,
+            "schedules/bidding_schedules.json", content,
             file_options={"content-type": "application/json", "upsert": "true"}
         )
-        logger.info(f"Uploaded schedules: {len(schedules)} terms")
+        logger.info("Uploaded bidding_schedules.json to Supabase Storage")
 
-    def merge_with_deduplication(self, existing: Dict, new_events: List) -> Dict:
-        """Merge new events into existing schedules with deduplication."""
-        # Build lookup set of existing abbreviations per term
+    def merge_with_deduplication(self, existing: Dict, new_windows: List) -> Dict:
+        """Merge BossWindow objects into schedules, deduplicating by term + abbrev.
+
+        New format (extended, backward-compatible):
+            [results_at, title, abbrev, opens_at, closes_at]
+        Old code reading index 0-2 still gets results/title/abbrev.
+        """
         existing_lookup = {}
         for term, windows in existing.items():
-            existing_lookup[term] = {window[2] for window in windows}
+            for window in windows:
+                abbrev = window[2] if len(window) >= 3 else None
+                if abbrev:
+                    existing_lookup.setdefault(term, set()).add(abbrev)
 
         added_count = 0
-        # Filter out duplicates and merge
-        for event in new_events:
-            term = event.term
-            abbrev = event.abbrev
-
-            if term not in existing_lookup or abbrev not in existing_lookup[term]:
+        for bw in new_windows:
+            term = bw.term
+            abbrev = bw.abbrev
+            if term not in existing_lookup or abbrev not in existing_lookup.get(term, set()):
                 if term not in existing:
                     existing[term] = []
-                existing[term].append([
-                    event.datetime,
-                    event.title,
-                    event.abbrev
-                ])
-                logger.info(f"Added new event: {term} | {abbrev}")
+                existing[term].append(bw.to_schedule_entry())
                 added_count += 1
-            else:
-                logger.debug(f"Skipping duplicate: {term} | {abbrev}")
 
-        # Sort by datetime within each term
-        for term in existing:
-            existing[term].sort(key=lambda x: x[0])
-
-        logger.info(f"Merge complete: {added_count} new events added")
+        logger.info(f"Merged {len(new_windows)} windows: {added_count} new, {len(new_windows) - added_count} duplicates")
         return existing
 
 
-class EventBridgeScheduler:
-    """Manages EventBridge schedule creation with deduplication."""
-
-    def __init__(
-        self,
-        region: str,
-        cluster_arn: str,
-        task_def_arn: str,
-        scheduler_role_arn: str,
-        subnets: List[str],
-        security_groups: List[str]
-    ):
-        self._scheduler = boto3.client("scheduler", region_name=region)
-        self._cluster_arn = cluster_arn
-        self._task_def_arn = task_def_arn
-        self._scheduler_role_arn = scheduler_role_arn
-        self._subnets = subnets
-        self._security_groups = security_groups
-
-    def schedule_exists(self, schedule_name: str) -> bool:
-        """Check if schedule exists in EventBridge."""
-        try:
-            self._scheduler.get_schedule(Name=schedule_name)
-            return True
-        except self._scheduler.exceptions.ResourceNotFoundException:
-            return False
-        except Exception:
-            return False
-
-    def create_schedule(
-        self,
-        schedule_name: str,
-        scrape_time: datetime,
-        term: str,
-        abbrev: str,
-        results_datetime: str
-    ) -> None:
-        """Create a one-time EventBridge schedule for pipeline execution."""
-        # Convert term to ACAD_TERM_ID format
-        acad_term_id = convert_term_to_acad_term_id(term)
-
-        # Create schedule with environment variables for ECS task
-        self._scheduler.create_schedule(
-            Name=schedule_name,
-            ScheduleExpression=f"at({scrape_time.strftime('%Y-%m-%dT%H:%M:%S')})",
-            FlexibleTimeWindow={"Mode": "OFF"},
-            Target={
-                "Arn": self._cluster_arn,
-                "RoleArn": self._scheduler_role_arn,
-                "EcsParameters": {
-                    "TaskDefinitionArn": self._task_def_arn,
-                    "LaunchType": "FARGATE",
-                    "NetworkConfiguration": {
-                        "awsvpcConfiguration": {
-                            "Subnets": self._subnets,
-                            "SecurityGroups": self._security_groups,
-                            "AssignPublicIp": "DISABLED"
-                        }
-                    },
-                    # Pass environment variables to ECS container
-                    "Overrides": {
-                        "ContainerOverrides": [
-                            {
-                                "Name": ECS_CONTAINER_NAME,
-                                "Environment": [
-                                    {"Name": "ACAD_TERM_ID", "Value": acad_term_id},
-                                    {"Name": "CURRENT_WINDOW_NAME", "Value": abbrev},
-                                    {"Name": "RESULTS_DATETIME", "Value": results_datetime}
-                                ]
-                            }
-                        ]
-                    }
-                },
-                "Input": json.dumps({
-                    "term": term,
-                    "acad_term_id": acad_term_id,
-                    "window": abbrev,
-                    "results_datetime": results_datetime
-                })
-            },
-            ActionAfterCompletion="DELETE"
-        )
-        logger.info(f"Created schedule: {schedule_name} with ACAD_TERM_ID={acad_term_id}")
-
+# =============================================================================
+# ScheduleTracker — tracks which schedules have been created
+# =============================================================================
 
 class ScheduleTracker:
     """Tracks created EventBridge schedules in Supabase Storage."""
@@ -243,7 +149,6 @@ class ScheduleTracker:
         self._bucket = bucket
 
     def download_tracking_file(self) -> Dict:
-        """Download existing_schedules.json tracking file."""
         try:
             data = self._supabase.storage.from_(self._bucket).download(
                 "schedules/existing_schedules.json"
@@ -253,30 +158,19 @@ class ScheduleTracker:
             return {}
 
     def upload_tracking_file(self, tracking: Dict) -> None:
-        """Upload updated tracking file."""
         content = json.dumps(tracking, indent=2).encode('utf-8')
         self._supabase.storage.from_(self._bucket).upload(
-            "schedules/existing_schedules.json",
-            content,
+            "schedules/existing_schedules.json", content,
             file_options={"content-type": "application/json", "upsert": "true"}
         )
 
     def is_tracked(self, tracking: Dict, term: str, schedule_name: str) -> bool:
-        """Check if schedule is already in tracking file."""
         return term in tracking and schedule_name in tracking.get(term, {})
 
-    def add_to_tracking(
-        self,
-        tracking: Dict,
-        term: str,
-        schedule_name: str,
-        scrape_time: datetime,
-        results_datetime: str
-    ) -> Dict:
-        """Add schedule to tracking file."""
+    def add_to_tracking(self, tracking: Dict, term: str, schedule_name: str,
+                        scrape_time: datetime, results_datetime: str) -> Dict:
         if term not in tracking:
             tracking[term] = {}
-
         tracking[term][schedule_name] = {
             "created_at": datetime.now().isoformat(),
             "scrape_time": scrape_time.isoformat(),
@@ -285,138 +179,150 @@ class ScheduleTracker:
         return tracking
 
 
-def calculate_scrape_time(windows: List, window_index: int) -> datetime:
-    """
-    Calculate when to scrape based on timing logic.
-
-    - R1W1 (first window): Scrape 2 weeks before window starts
-    - Subsequent windows: Scrape 3 hours after previous results
-    """
-    current_results = datetime.fromisoformat(windows[window_index][0])
-
-    if window_index == 0:
-        window_start = current_results - timedelta(days=2)
-        return window_start - timedelta(weeks=2)
-    else:
-        previous_results = datetime.fromisoformat(windows[window_index - 1][0])
-        return previous_results + timedelta(hours=3)
-
+# =============================================================================
+# Dual-mode Lambda handler
+# =============================================================================
 
 def lambda_handler(event, context):
-    """
-    Main Lambda handler - fetches BOSS events from Truba API.
-
-    Uses TrubaClient for all API interaction (DRY principle).
-    """
+    """Dual-mode handler: monthly calendar fetch OR pipeline run trigger."""
     try:
-        # Initialize Supabase client
+        trigger = event.get("trigger", "monthly-schedule")
+
+        # =============================================================
+        # MODE 2: Pipeline run — start ECS task with overrides
+        # =============================================================
+        if trigger == "run_pipeline":
+            acad_term_id = event.get("acad_term_id")
+            window = event.get("window")
+            results_datetime = event.get("results_datetime", "")
+
+            if not acad_term_id or not window:
+                raise ValueError("run_pipeline trigger requires acad_term_id and window")
+
+            logger.info(f"Mode 2: Starting ECS task for {acad_term_id}/{window}")
+
+            ecs = boto3.client("ecs", region_name=AWS_REGION)
+            resp = ecs.run_task(
+                cluster=ECS_CLUSTER_ARN,
+                taskDefinition=ECS_TASK_DEF_ARN,
+                launchType="FARGATE",
+                networkConfiguration={
+                    "awsvpcConfiguration": {
+                        "subnets": SUBNETS,
+                        "securityGroups": SECURITY_GROUPS,
+                        "assignPublicIp": ASSIGN_PUBLIC_IP
+                    }
+                },
+                overrides={
+                    "containerOverrides": [{
+                        "name": ECS_CONTAINER_NAME,
+                        "environment": [
+                            {"name": "ACAD_TERM_ID", "value": acad_term_id},
+                            {"name": "CURRENT_WINDOW_NAME", "value": window},
+                            {"name": "RESULTS_DATETIME", "value": results_datetime}
+                        ]
+                    }]
+                }
+            )
+
+            task_arn = resp["tasks"][0]["taskArn"] if resp.get("tasks") else "unknown"
+            logger.info(f"ECS task started: {task_arn}")
+            return {
+                "statusCode": 200,
+                "body": json.dumps({
+                    "message": f"ECS task started for {acad_term_id}/{window}",
+                    "task_arn": task_arn
+                })
+            }
+
+        # =============================================================
+        # MODE 1: Monthly calendar fetch + schedule creation
+        # =============================================================
         if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
 
         supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-        # Create TrubaClient (shared implementation)
-        truba_config = TrubaConfig(
-            api_url=TRUBA_API_URL,
-            months_ahead=MONTHS_AHEAD
-        )
-        truba_client = TrubaClient(truba_config)
+        # Fetch BOSS windows from Trumba (paired: opens + closes + results)
+        truba = TrubaClient(TrubaConfig(
+            api_url=TRUBA_API_URL, months_ahead=MONTHS_AHEAD
+        ))
+        logger.info(f"Fetching Trumba: {TRUBA_API_URL}")
+        boss_windows = truba.fetch_boss_windows()
+        logger.info(f"Found {len(boss_windows)} BOSS windows")
 
-        # Fetch BOSS events
-        logger.info(f"Fetching Truba API: {TRUBA_API_URL}")
-        boss_events = truba_client.fetch_boss_events()
-        logger.info(f"Extracted {len(boss_events)} BOSS bidding events")
+        if not boss_windows:
+            return {"statusCode": 200, "body": json.dumps({"message": "No BOSS windows found", "events_found": 0})}
 
-        if not boss_events:
-            return {
-                "statusCode": 200,
-                "body": json.dumps({
-                    "message": "No new BOSS events found",
-                    "events_found": 0
-                })
-            }
+        # Update bidding_schedules.json
+        mgr = BiddingScheduleManager(supabase)
+        existing = mgr.download_existing_schedules()
+        updated = mgr.merge_with_deduplication(existing, boss_windows)
+        mgr.upload_schedules(updated)
 
-        # Update bidding_schedules.json with deduplication
-        schedule_manager = BiddingScheduleManager(supabase)
-        existing_schedules = schedule_manager.download_existing_schedules()
-        updated_schedules = schedule_manager.merge_with_deduplication(
-            existing_schedules, boss_events
-        )
-        schedule_manager.upload_schedules(updated_schedules)
-
-        # Create EventBridge schedules with deduplication
+        # Create one-time EventBridge schedules → invoke THIS Lambda in Mode 2
         schedules_created = []
+        lambda_arn = (context.invoked_function_arn if context
+                      else os.environ.get("AWS_LAMBDA_FUNCTION_ARN", ""))
 
-        if ECS_CLUSTER_ARN and ECS_TASK_DEF_ARN and SCHEDULER_ROLE_ARN:
-            scheduler = EventBridgeScheduler(
-                region=AWS_REGION,
-                cluster_arn=ECS_CLUSTER_ARN,
-                task_def_arn=ECS_TASK_DEF_ARN,
-                scheduler_role_arn=SCHEDULER_ROLE_ARN,
-                subnets=SUBNETS,
-                security_groups=SECURITY_GROUPS
-            )
-
+        if LAMBDA_INVOKE_ROLE_ARN:
+            sched = boto3.client("scheduler", region_name=AWS_REGION)
             tracker = ScheduleTracker(supabase)
-            tracking_data = tracker.download_tracking_file()
+            tracking = tracker.download_tracking_file()
 
-            for term, windows in updated_schedules.items():
+            for term, windows in updated.items():
                 for i, window in enumerate(windows):
                     abbrev = window[2]
-                    schedule_name = f"bidlysmu-pipeline-{term}-{abbrev}"
+                    name = f"bidlysmu-pipeline-{term}-{abbrev}".replace(" ", "-").replace("/", "-")
 
-                    # Level 1: Check tracking file (fast)
-                    if tracker.is_tracked(tracking_data, term, schedule_name):
+                    if tracker.is_tracked(tracking, term, name):
                         continue
-
-                    # Level 2: Check EventBridge API (authoritative)
-                    if scheduler.schedule_exists(schedule_name):
+                    try:
+                        sched.get_schedule(Name=name)
                         continue
+                    except sched.exceptions.ResourceNotFoundException:
+                        pass
 
-                    # Calculate scrape time
                     scrape_time = calculate_scrape_time(windows, i)
-
-                    # Skip if in the past
                     if scrape_time < datetime.now():
                         continue
 
-                    # Create schedule
-                    scheduler.create_schedule(
-                        schedule_name=schedule_name,
-                        scrape_time=scrape_time,
-                        term=term,
-                        abbrev=abbrev,
-                        results_datetime=window[0]
+                    acad_term_id = dash_format_to_acad_term_id(term)
+                    sched.create_schedule(
+                        Name=name,
+                        ScheduleExpression=f"at({scrape_time.strftime('%Y-%m-%dT%H:%M:%S')})",
+                        FlexibleTimeWindow={"Mode": "OFF"},
+                        Target={
+                            "Arn": lambda_arn,
+                            "RoleArn": LAMBDA_INVOKE_ROLE_ARN,
+                            "Input": json.dumps({
+                                "trigger": "run_pipeline",
+                                "acad_term_id": acad_term_id,
+                                "window": abbrev,
+                                "results_datetime": window[0]
+                            })
+                        },
+                        ActionAfterCompletion="DELETE"
                     )
+                    tracking = tracker.add_to_tracking(tracking, term, name, scrape_time, window[0])
+                    schedules_created.append(name)
+                    logger.info(f"Schedule: {name} at {scrape_time.isoformat()}")
 
-                    # Update tracking
-                    tracking_data = tracker.add_to_tracking(
-                        tracking_data, term, schedule_name, scrape_time, window[0]
-                    )
-                    schedules_created.append(schedule_name)
-
-            # Upload updated tracking file
-            tracker.upload_tracking_file(tracking_data)
+            if schedules_created:
+                tracker.upload_tracking_file(tracking)
 
         return {
             "statusCode": 200,
             "body": json.dumps({
-                "message": "Successfully updated schedules",
-                "events_found": len(boss_events),
-                "schedules_created": schedules_created,
-                "total_windows": sum(len(w) for w in updated_schedules.values())
+                "message": f"Processed {len(boss_windows)} windows",
+                "events_found": len(boss_windows),
+                "schedules_created": len(schedules_created)
             })
         }
 
     except ValueError as e:
         logger.error(f"Validation error: {e}")
-        return {
-            "statusCode": 400,
-            "body": json.dumps({"error": str(e)})
-        }
+        return {"statusCode": 400, "body": json.dumps({"error": str(e)})}
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({"error": str(e)})
-        }
+        logger.error(f"Unexpected error: {e}", exc_info=True)
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}

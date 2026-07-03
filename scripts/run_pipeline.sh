@@ -61,12 +61,12 @@ logger.info('Supabase Storage download started')
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 bucket = 'bidlysmu-files'
 
-# Download bidding_schedules.json
+# Download bidding_schedules.json (from Lambda scheduler's Supabase path)
 try:
-    response = supabase.storage.from_(bucket).download('input/bidding_schedules.json')
+    response = supabase.storage.from_(bucket).download('schedules/bidding_schedules.json')
     Path('script_input/bidding_schedules.json').parent.mkdir(parents=True, exist_ok=True)
     Path('script_input/bidding_schedules.json').write_bytes(response)
-    logger.info('Downloaded: input/bidding_schedules.json')
+    logger.info('Downloaded: schedules/bidding_schedules.json')
 except Exception as e:
     logger.warning(f'Could not download bidding_schedules.json: {e}')
 
@@ -111,6 +111,11 @@ import re
 def window_to_code(name):
     if not name:
         return 'UNKNOWN'
+    # If input is already an abbrev code (e.g., "R1CW1", "R1FW1"), return as-is
+    m = re.search(r'^R(\d+)([A-CF]*)W(\d+)$', name, re.IGNORECASE)
+    if m:
+        return name
+    # Parse from full title format (e.g., "BOSS Round 1A Window 1 Results")
     m = re.search(r'Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)', name, re.IGNORECASE)
     if m:
         return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
@@ -132,15 +137,26 @@ wc = window_to_code(CURRENT_WINDOW_NAME)
 print(f'{ACAD_TERM_ID}_{wc}_{ts}.log')
 ")
 
+# Fallback if LOG_FILENAME is empty (config import warning leaked to stdout)
+if [ -z "$LOG_FILENAME" ] || [ "$LOG_FILENAME" = "logs/" ]; then
+    LOG_FILENAME="pipeline_$(date +%Y%m%d_%H%M%S).log"
+fi
 echo "Log file: logs/${LOG_FILENAME}"
 echo "------------------------------------------------------------"
 
 # --- Step 1: Scraping (requires Chrome/chromedriver) ---
 # Stream A: class_scraper.py (1a) -> html_data_extractor.py (1b)
 # Stream B: overall_results_scraper.py (1c)
+# NOTE: Stream B is skipped on R1W1 — no past results exist for the first window
 
 STREAM_A_LOG="logs/${LOG_FILENAME/.log/_1a_class_scrape.log}"
 STREAM_B_LOG="logs/${LOG_FILENAME/.log/_1b_overall_results.log}"
+
+SKIP_STREAM_B=false
+if echo "$CURRENT_WINDOW_NAME" | grep -qiE '^R1W1$'; then
+    echo "Skipping Stream B (OverallResults): no past results for first window (R1W1)"
+    SKIP_STREAM_B=true
+fi
 
 (
     echo "[Stream A] Running class_scraper.py (1a)..."
@@ -192,9 +208,14 @@ extractor = HTMLDataExtractor()
 result = extractor.scrape(output_path='script_input/raw_data.xlsx')
 logger.info(f'Extraction completed: {result}')
 " 2>&1
-) >> "$STREAM_A_LOG" 2>&1 &
+) 2>&1 | tee "$STREAM_A_LOG" &
 PID_A=$!
 
+if [ "$SKIP_STREAM_B" = true ]; then
+    echo "[Stream B] SKIPPED — no past results for R1W1"
+    PID_B=0
+    CODE_B=0
+else
 (
     echo "[Stream B] Running overall_results_scraper.py (1c)..."
     python -c "
@@ -227,16 +248,23 @@ result = scraper.scrape(term=START_AY_TERM, bid_round=None, bid_window=None, out
 logger.info(f'Scraping completed: {result}')
 driver.quit()
 " 2>&1
-) >> "$STREAM_B_LOG" 2>&1 &
+) 2>&1 | tee "$STREAM_B_LOG" &
 PID_B=$!
+fi  # End of SKIP_STREAM_B conditional
 
 wait $PID_A
 CODE_A=$?
-wait $PID_B
-CODE_B=$?
+if [ "$SKIP_STREAM_B" != true ]; then
+    wait $PID_B
+    CODE_B=$?
+fi
 
 if [ $CODE_A -ne 0 ] || [ $CODE_B -ne 0 ]; then
-    echo "❌ ERROR: Step 1 (scraping) failed. Halting pipeline."
+    echo "ERROR: Step 1 (scraping) failed. Halting pipeline."
+    echo "--- Stream A log (last 30 lines) ---"
+    tail -30 "$STREAM_A_LOG" 2>/dev/null || echo "(no output)"
+    echo "--- Stream B log (last 30 lines) ---"
+    tail -30 "$STREAM_B_LOG" 2>/dev/null || echo "(no output)"
     exit 1
 fi
 echo "✅ Step 1 (scraping) completed."
@@ -363,6 +391,21 @@ if overall_dir.exists():
             logger.info(f'Uploaded: {remote_path}')
         except Exception as e:
             logger.error(f'Failed to upload {xlsx_file.name}: {e}')
+
+# Upload scraped HTML files (preserve raw data for debugging/reprocessing)
+html_dir = Path('script_input/classTimingsFull')
+if html_dir.exists():
+    for html_file in html_dir.rglob('*.html'):
+        remote_path = f'input/classTimingsFull/{html_file.relative_to(html_dir)}'
+        try:
+            supabase.storage.from_(bucket).upload(
+                str(remote_path),
+                html_file.read_bytes(),
+                {'content-type': 'text/html', 'upsert': 'true'}
+            )
+            logger.info(f'Uploaded: {remote_path}')
+        except Exception as e:
+            logger.error(f'Failed to upload HTML {html_file.name}: {e}')
 
 logger.info('Supabase Storage upload completed')
 " 2>&1

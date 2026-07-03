@@ -19,7 +19,7 @@ resource "aws_ecs_cluster" "main" {
 # CloudWatch Log Group for ECS
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${var.project_name}-pipeline"
-  retention_in_days = 30
+  retention_in_days = var.log_retention_days
 
   tags = {
     Name = "${var.project_name}-ecs-logs"
@@ -35,6 +35,10 @@ resource "aws_ecs_task_definition" "pipeline" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = var.ecs_cpu
   memory                   = var.ecs_memory
+
+  ephemeral_storage {
+    size_in_gib = var.ecs_ephemeral_storage
+  }
 
   runtime_platform {
     cpu_architecture        = "X86_64"
@@ -59,7 +63,7 @@ resource "aws_ecs_task_definition" "pipeline" {
       environment = [
         {
           name  = "ACAD_TERM_ID"
-          value = "AY202526T3A"
+          value = var.acad_term_id
         },
         {
           name  = "PYTHONUTF8"
@@ -71,58 +75,58 @@ resource "aws_ecs_task_definition" "pipeline" {
         },
         {
           name  = "USE_SUPABASE_STORAGE"
-          value = "true"
+          value = tostring(var.use_supabase_storage)
         }
       ]
 
       secrets = [
         {
           name      = "DB_HOST"
-          valueFrom = "${data.aws_secretsmanager_secret.db.arn}:DB_HOST::"
+          valueFrom = aws_ssm_parameter.db_host.arn
         },
         {
           name      = "DB_NAME"
-          valueFrom = "${data.aws_secretsmanager_secret.db.arn}:DB_NAME::"
+          valueFrom = aws_ssm_parameter.db_name.arn
         },
         {
           name      = "DB_USER"
-          valueFrom = "${data.aws_secretsmanager_secret.db.arn}:DB_USER::"
+          valueFrom = aws_ssm_parameter.db_user.arn
         },
         {
           name      = "DB_PASSWORD"
-          valueFrom = "${data.aws_secretsmanager_secret.db.arn}:DB_PASSWORD::"
+          valueFrom = aws_ssm_parameter.db_password.arn
         },
         {
           name      = "DB_PORT"
-          valueFrom = "${data.aws_secretsmanager_secret.db.arn}:DB_PORT::"
+          valueFrom = aws_ssm_parameter.db_port.arn
         },
         {
           name      = "BOSS_EMAIL"
-          valueFrom = "${data.aws_secretsmanager_secret.boss.arn}:email::"
+          valueFrom = aws_ssm_parameter.boss_email.arn
         },
         {
           name      = "BOSS_PASSWORD"
-          valueFrom = "${data.aws_secretsmanager_secret.boss.arn}:password::"
+          valueFrom = aws_ssm_parameter.boss_password.arn
         },
         {
           name      = "BOSS_MFA_SECRET"
-          valueFrom = "${data.aws_secretsmanager_secret.boss.arn}:mfa_secret::"
+          valueFrom = aws_ssm_parameter.boss_mfa_secret.arn
         },
         {
           name      = "GEMINI_API_KEY"
-          valueFrom = "${data.aws_secretsmanager_secret.api_keys.arn}:gemini_api_key::"
+          valueFrom = aws_ssm_parameter.gemini_api_key.arn
         },
         {
           name      = "SUPABASE_URL"
-          valueFrom = "${data.aws_secretsmanager_secret.api_keys.arn}:supabase_url::"
+          valueFrom = aws_ssm_parameter.supabase_url.arn
         },
         {
           name      = "SUPABASE_SERVICE_KEY"
-          valueFrom = "${data.aws_secretsmanager_secret.api_keys.arn}:supabase_service_key::"
+          valueFrom = aws_ssm_parameter.supabase_service_key.arn
         },
         {
           name      = "SENTRY_DSN"
-          valueFrom = "${data.aws_secretsmanager_secret.api_keys.arn}:sentry_dsn::"
+          valueFrom = aws_ssm_parameter.sentry_dsn.arn
         }
       ]
 
@@ -135,20 +139,4 @@ resource "aws_ecs_task_definition" "pipeline" {
   tags = {
     Name = "${var.project_name}-pipeline-task"
   }
-}
-
-# =============================================================================
-# DATA SOURCES FOR SECRETS
-# =============================================================================
-
-data "aws_secretsmanager_secret" "db" {
-  name = var.db_secret_name
-}
-
-data "aws_secretsmanager_secret" "boss" {
-  name = var.boss_secret_name
-}
-
-data "aws_secretsmanager_secret" "api_keys" {
-  name = var.api_keys_secret_name
 }

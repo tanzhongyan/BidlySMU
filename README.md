@@ -297,7 +297,7 @@ This pipeline uses a hybrid serverless architecture:
 
 ### Prerequisites
 
-1. **AWS Account** with permissions for Lambda, ECS, ECR, Secrets Manager, EventBridge
+1. **AWS Account** with permissions for Lambda, ECS, ECR, SSM Parameter Store, EventBridge
 2. **Supabase Account** for PostgreSQL database and Storage
 3. **Docker** installed locally for building images
 
@@ -339,10 +339,31 @@ This pipeline uses a hybrid serverless architecture:
    docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:latest
    ```
 
-3. **Create Secrets in Secrets Manager**
-   - `bidlysmu-db-credentials`
-   - `bidlysmu-boss-credentials`
-   - `bidlysmu-api-keys`
+3. **Configure SSM Parameter Store Secrets (before Terraform apply)**
+
+   The Terraform configuration (`ssm.tf`) manages 12 SSM parameters under `/bidlysmu/`. Set values in `terraform.tfvars`:
+
+   ```hcl
+   # Database
+   ssm_db_host     = "your-db-host"
+   ssm_db_name     = "postgres"
+   ssm_db_user     = "postgres"
+   ssm_db_password = "your-password"
+   ssm_db_port     = "5432"
+
+   # BOSS credentials
+   ssm_boss_email     = "your-email@smu.edu.sg"
+   ssm_boss_password  = "your-password"
+   ssm_boss_mfa_secret = "your-totp-secret"
+
+   # API keys
+   ssm_gemini_api_key       = "your-gemini-key"
+   ssm_supabase_url          = "https://xxxxx.supabase.co"
+   ssm_supabase_service_key  = "your-service-role-key"
+   ssm_sentry_dsn            = "your-sentry-dsn"
+   ```
+
+   All sensitive parameters use `SecureString` (KMS-encrypted). `DB_PORT` and `SUPABASE_URL` are stored as plain `String`.
 
 4. **Create Supabase Storage Bucket**
    - Bucket name: `bidlysmu-files`
@@ -400,10 +421,10 @@ This pipeline uses a hybrid serverless architecture:
 |-----------|---------------------|
 | Lambda (1 run/month, 10 min) | ~$0.01 |
 | ECS Fargate (4 windows × 3hr = 12hr/month) | ~$1.00 |
-| Secrets Manager (4 secrets) | ~$2.00 |
+| SSM Parameter Store (12 params) | ~$0.00 (free tier) |
 | CloudWatch Logs (1GB) | ~$0.50 |
 | EventBridge Scheduler | ~$0.00 (free tier) |
-| **Total AWS** | **~$3.50/month** |
+| **Total AWS** | **~$1.50/month** |
 
 **Supabase Storage:** Included in AfterClass plan (100GB, current usage 450MB)
 
@@ -422,6 +443,7 @@ deploy/terraform/
 ├── lambda.tf            # Lambda function, EventBridge schedule
 ├── iam.tf               # IAM roles and policies
 ├── network.tf           # VPC, subnets (optional)
+├── ssm.tf               # SSM Parameter Store parameters
 └── terraform.tfvars.example  # Example configuration
 ```
 
@@ -434,25 +456,7 @@ deploy/terraform/
    # Edit terraform.tfvars with your values
    ```
 
-2. **Create Secrets Manager secrets (before Terraform apply):**
-   ```bash
-   # Database credentials
-   aws secretsmanager create-secret \
-     --name bidlysmu-db-credentials \
-     --secret-string '{"DB_HOST":"...","DB_NAME":"...","DB_USER":"...","DB_PASSWORD":"...","DB_PORT":"5432"}'
-
-   # BOSS credentials
-   aws secretsmanager create-secret \
-     --name bidlysmu-boss-credentials \
-     --secret-string '{"email":"...","password":"...","mfa_secret":"..."}'
-
-   # API keys
-   aws secretsmanager create-secret \
-     --name bidlysmu-api-keys \
-     --secret-string '{"gemini_api_key":"...","supabase_url":"...","supabase_service_key":"...","sentry_dsn":"..."}'
-   ```
-
-3. **Initialize and apply Terraform:**
+2. **Initialize and apply Terraform:**
    ```bash
    terraform init
    terraform plan
@@ -482,7 +486,53 @@ security_group_name = "your-security-group-name"
 
 ---
 
-## **9. Crediting the Author**
+## **9. CI/CD Pipeline (GitHub Actions)**
+
+The `.github/workflows/deploy.yml` workflow automatically builds and deploys Docker images on push to `main` or `Feature-Cloud-Run-*` branches.
+
+### Pipeline Jobs
+
+| Job | Depends On | What It Does |
+|-----|-----------|--------------|
+| `build-pipeline` | — | Builds the main Docker image and pushes to `PIPELINE_ECR_URL` |
+| `build-scheduler` | — | Builds the Lambda Docker image and pushes to `SCHEDULER_ECR_URL` |
+| `update-lambda` | `build-scheduler` | Updates the `bidlysmu-scheduler` Lambda function code |
+| `update-ecs` | `build-pipeline` | Fetches the current ECS task definition, replaces the image tag, registers a new revision |
+
+### Execution Model
+
+The CI/CD pipeline only **builds and publishes** Docker images. Actual pipeline execution is triggered separately:
+
+1. The Lambda scheduler runs on a monthly cron (or manual invocation)
+2. It creates one-time EventBridge schedules at the calculated scrape times
+3. Those schedules invoke the Lambda in "run_pipeline" mode
+4. The Lambda calls `ecs.run_task()` to launch the ECS Fargate pipeline
+
+### Required GitHub Secrets
+
+| Secret | Purpose | How to Obtain |
+|--------|---------|---------------|
+| `AWS_REGION` | AWS region (default: `ap-southeast-1`) | Set to your deployment region |
+| `AWS_ACCESS_KEY_ID` | IAM user access key | Create an IAM user with ECR push, Lambda update, and ECS register permissions |
+| `AWS_SECRET_ACCESS_KEY` | Corresponding secret key | Companion to `AWS_ACCESS_KEY_ID` |
+| `PIPELINE_ECR_URL` | ECR repo for the pipeline image | From `terraform output ecr_pipeline_url` |
+| `SCHEDULER_ECR_URL` | ECR repo for the scheduler image | From `terraform output ecr_scheduler_url` |
+
+### Trigger Branches
+
+- **`main`**: Production deployment
+- **`Feature-Cloud-Run-*`**: Feature branch testing — matches the pattern `Feature-Cloud-Run-*` (e.g., `Feature-Cloud-Run-migration`)
+- **Manual**: Use `workflow_dispatch` from the Actions tab
+
+### Prerequisites
+
+Before the CI/CD pipeline can deploy, you must first:
+1. Run `terraform apply` to create ECR repositories, the Lambda function, and the ECS task definition
+2. Configure all 5 GitHub Secrets in **Settings → Secrets and variables → Actions**
+
+---
+
+## **10. Crediting the Author**
 
 If you use this project or its models in your work, please credit **Tan Zhong Yan** in the following way on GitHub:
 

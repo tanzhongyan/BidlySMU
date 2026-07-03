@@ -30,12 +30,6 @@ variable "create_vpc" {
   default     = false
 }
 
-variable "vpc_name" {
-  description = "Name of existing VPC to use (if create_vpc = false)"
-  type        = string
-  default     = "default"
-}
-
 variable "vpc_cidr" {
   description = "CIDR block for VPC (if creating new)"
   type        = string
@@ -55,25 +49,53 @@ variable "security_group_name" {
 variable "ecs_cpu" {
   description = "CPU units for ECS task"
   type        = number
-  default     = 2048
+  default     = 1024
 }
 
 variable "ecs_memory" {
   description = "Memory (MB) for ECS task"
   type        = number
-  default     = 4096
+  default     = 2048
 }
 
 variable "pipeline_image_tag" {
-  description = "Docker image tag for pipeline"
+  description = "Docker image tag for pipeline (required — set in tfvars)"
   type        = string
-  default     = "v1.0.0"
 }
 
 variable "ecs_container_name" {
   description = "Container name in ECS task definition (for environment variable overrides)"
   type        = string
   default     = "bidlysmu-pipeline"
+}
+
+variable "acad_term_id" {
+  description = "Academic term ID in BOSS format (e.g., AY202526T3A). Changes each term."
+  type        = string
+}
+
+variable "use_supabase_storage" {
+  description = "Whether to download/upload files from Supabase Storage during pipeline runs"
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch log retention in days"
+  type        = number
+  default     = 30
+}
+
+variable "ecs_ephemeral_storage" {
+  description = "Ephemeral storage (GiB) for ECS Fargate task (21-200)"
+  type        = number
+  default     = 30
+}
+
+variable "ecr_image_retention_count" {
+  description = "Number of images to keep in ECR before expiration"
+  type        = number
+  default     = 10
 }
 
 # =============================================================================
@@ -83,7 +105,7 @@ variable "ecs_container_name" {
 variable "lambda_memory" {
   description = "Memory (MB) for Lambda function"
   type        = number
-  default     = 1024
+  default     = 512
 }
 
 variable "lambda_timeout" {
@@ -93,9 +115,8 @@ variable "lambda_timeout" {
 }
 
 variable "scheduler_image_tag" {
-  description = "Docker image tag for Lambda scheduler"
+  description = "Docker image tag for Lambda scheduler (required — set in tfvars)"
   type        = string
-  default     = "v1.0.0"
 }
 
 # =============================================================================
@@ -115,25 +136,79 @@ variable "months_ahead" {
 }
 
 # =============================================================================
-# SECRETS MANAGER
+# SSM PARAMETER STORE VALUES (replaces Secrets Manager, free tier)
 # =============================================================================
 
-variable "db_secret_name" {
-  description = "Name of Secrets Manager secret for database credentials"
+variable "ssm_db_host" {
+  description = "Database host for SSM parameter"
   type        = string
-  default     = "bidlysmu-db-credentials"
+  sensitive   = true
 }
 
-variable "boss_secret_name" {
-  description = "Name of Secrets Manager secret for BOSS credentials"
+variable "ssm_db_name" {
+  description = "Database name for SSM parameter"
   type        = string
-  default     = "bidlysmu-boss-credentials"
+  sensitive   = true
 }
 
-variable "api_keys_secret_name" {
-  description = "Name of Secrets Manager secret for API keys"
+variable "ssm_db_user" {
+  description = "Database user for SSM parameter"
   type        = string
-  default     = "bidlysmu-api-keys"
+  sensitive   = true
+}
+
+variable "ssm_db_password" {
+  description = "Database password for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_db_port" {
+  description = "Database port for SSM parameter"
+  type        = string
+  default     = "5432"
+}
+
+variable "ssm_boss_email" {
+  description = "BOSS email for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_boss_password" {
+  description = "BOSS password for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_boss_mfa_secret" {
+  description = "BOSS MFA secret for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_gemini_api_key" {
+  description = "Gemini API key for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_supabase_url" {
+  description = "Supabase URL for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_supabase_service_key" {
+  description = "Supabase service key for SSM parameter"
+  type        = string
+  sensitive   = true
+}
+
+variable "ssm_sentry_dsn" {
+  description = "Sentry DSN for SSM parameter"
+  type        = string
+  sensitive   = true
 }
 
 # =============================================================================
@@ -154,16 +229,13 @@ variable "supabase_url" {
   description = "Supabase project URL (can also be stored in secrets)"
   type        = string
   default     = ""
+  sensitive   = true
 }
 
-variable "ecs_cluster_arn" {
-  description = "ECS cluster ARN for EventBridge target (set after ECS is created)"
+variable "supabase_service_key" {
+  description = "Supabase service_role key (for DB + Storage access)"
   type        = string
   default     = ""
+  sensitive   = true
 }
 
-variable "task_definition_arn" {
-  description = "ECS task definition ARN for EventBridge target (set after task is created)"
-  type        = string
-  default     = ""
-}

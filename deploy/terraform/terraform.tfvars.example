@@ -1,7 +1,8 @@
 # =============================================================================
 # TERRAFORM VARIABLES - EXAMPLE CONFIGURATION
 # =============================================================================
-# Copy this file to terraform.tfvars and fill in your values
+# Copy this file to terraform.tfvars and fill in your values.
+# NOTE: terraform.tfvars is gitignored - never commit real secrets.
 # =============================================================================
 
 # AWS Configuration
@@ -12,33 +13,26 @@ project_name = "bidlysmu"
 # =============================================================================
 # VPC / NETWORKING
 # =============================================================================
-# Option 1: Use existing VPC (recommended - use default VPC for free tier)
+# Option 1: Use existing default VPC (recommended - free, uses public subnets)
 create_vpc          = false
-vpc_name            = "default"
 security_group_name = "default"
 
-# Option 2: Create new VPC (for testing/dev - costs ~$30/month for NAT Gateway)
+# Option 2: Create new VPC (costs ~$30/month for NAT Gateway)
 # create_vpc = true
 # vpc_cidr   = "10.0.0.0/16"
 
 # =============================================================================
-# ECS CONFIGURATION
+# ECS CONFIGURATION (right-sized for cost optimization)
 # =============================================================================
-# CPU and memory for pipeline task
-# Options: 256, 512, 1024, 2048, 4096 (CPU)
-# Memory must be compatible with CPU: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html
-ecs_cpu           = 2048
-ecs_memory        = 4096
-pipeline_image_tag = "v1.0.0"
-
-# ECS container name (used for environment variable overrides)
-ecs_container_name = "bidlysmu-pipeline"
+ecs_cpu             = 1024
+ecs_memory          = 2048
+acad_term_id        = "AY202526T3A"
+pipeline_image_tag  = "v1.0.0"
+ecs_container_name  = "bidlysmu-pipeline"
 
 # =============================================================================
-# LAMBDA CONFIGURATION
+# LAMBDA CONFIGURATION (lightweight - Trumba API only, no Selenium)
 # =============================================================================
-# Lambda now uses Truba JSON API (no Selenium required)
-# Lightweight - only needs requests, supabase, boto3
 lambda_memory       = 512
 lambda_timeout      = 300
 scheduler_image_tag = "v1.0.0"
@@ -46,7 +40,6 @@ scheduler_image_tag = "v1.0.0"
 # =============================================================================
 # TRUBA API CONFIGURATION
 # =============================================================================
-# Truba JSON API for SMU calendar (public, no authentication)
 truba_api_url   = "https://www.trumba.com/calendars/SMU_RO_Acad.json"
 months_ahead    = 12
 
@@ -57,21 +50,32 @@ months_ahead    = 12
 monthly_schedule_cron = "cron(0 0 1 * ? *)"
 
 # =============================================================================
-# SECRETS MANAGER
+# SSM PARAMETER STORE (free tier, replaces Secrets Manager)
 # =============================================================================
-# These secrets must exist before running terraform apply
-# Create them via AWS Console or CLI:
-#
-# aws secretsmanager create-secret --name bidlysmu-db-credentials --secret-string '{"DB_HOST":"...","DB_NAME":"...","DB_USER":"...","DB_PASSWORD":"...","DB_PORT":"5432"}'
-# aws secretsmanager create-secret --name bidlysmu-boss-credentials --secret-string '{"email":"...","password":"...","mfa_secret":"..."}'
-# aws secretsmanager create-secret --name bidlysmu-api-keys --secret-string '{"gemini_api_key":"...","supabase_url":"...","supabase_service_key":"...","sentry_dsn":"..."}'
+# These are stored as SSM SecureString parameters under /bidlysmu/
+# No manual creation needed - Terraform creates them from these values.
+# =============================================================================
 
-db_secret_name       = "bidlysmu-db-credentials"
-boss_secret_name     = "bidlysmu-boss-credentials"
-api_keys_secret_name = "bidlysmu-api-keys"
+# Database credentials
+ssm_db_host     = "aws-1-ap-southeast-2.pooler.supabase.com"
+ssm_db_name     = "postgres"
+ssm_db_user     = "postgres.nccnkwmlcbesjcxzrjks"
+ssm_db_password = "your-db-password-here"
+ssm_db_port     = "5432"
+
+# BOSS credentials (SMU bidding portal)
+ssm_boss_email      = "your-email@smu.edu.sg"
+ssm_boss_password   = "your-boss-password"
+ssm_boss_mfa_secret = "your-mfa-secret"
+
+# API keys
+ssm_gemini_api_key       = "your-gemini-api-key"
+ssm_supabase_url         = "https://nccnkwmlcbesjcxzrjks.supabase.co"
+ssm_supabase_service_key = "your-supabase-service-key"
+ssm_sentry_dsn           = "https://your-sentry-dsn@sentry.io/your-project"
 
 # =============================================================================
-# SUPABASE
+# SUPABASE (for Lambda environment variables)
 # =============================================================================
-# Supabase URL (can also be stored in secrets)
-supabase_url = "https://your-project.supabase.co"
+supabase_url         = "https://nccnkwmlcbesjcxzrjks.supabase.co"
+supabase_service_key = "your-supabase-service-key"

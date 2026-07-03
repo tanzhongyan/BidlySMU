@@ -33,10 +33,10 @@ resource "aws_iam_role_policy_attachment" "ecs_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Custom policy for Secrets Manager access
+# Custom policy for SSM Parameter Store access
 resource "aws_iam_policy" "ecs_secrets" {
   name        = "${var.project_name}-ecs-secrets-policy"
-  description = "Allow ECS tasks to read secrets from Secrets Manager"
+  description = "Allow ECS tasks to read parameters from SSM Parameter Store"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -44,12 +44,31 @@ resource "aws_iam_policy" "ecs_secrets" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
+          "ssm:GetParameters",
+          "ssm:GetParameter"
         ]
         Resource = [
-          data.aws_secretsmanager_secret.db.arn,
-          data.aws_secretsmanager_secret.boss.arn,
-          data.aws_secretsmanager_secret.api_keys.arn
+          aws_ssm_parameter.db_host.arn,
+          aws_ssm_parameter.db_name.arn,
+          aws_ssm_parameter.db_user.arn,
+          aws_ssm_parameter.db_password.arn,
+          aws_ssm_parameter.db_port.arn,
+          aws_ssm_parameter.boss_email.arn,
+          aws_ssm_parameter.boss_password.arn,
+          aws_ssm_parameter.boss_mfa_secret.arn,
+          aws_ssm_parameter.gemini_api_key.arn,
+          aws_ssm_parameter.supabase_url.arn,
+          aws_ssm_parameter.supabase_service_key.arn,
+          aws_ssm_parameter.sentry_dsn.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = [
+          data.aws_kms_alias.ssm.target_key_arn
         ]
       }
     ]
@@ -142,10 +161,10 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Secrets Manager access for Lambda
+# SSM Parameter Store access for Lambda
 resource "aws_iam_policy" "lambda_secrets" {
   name        = "${var.project_name}-lambda-secrets-policy"
-  description = "Allow Lambda to read secrets from Secrets Manager"
+  description = "Allow Lambda to read parameters from SSM Parameter Store"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -153,11 +172,31 @@ resource "aws_iam_policy" "lambda_secrets" {
       {
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
+          "ssm:GetParameters",
+          "ssm:GetParameter"
         ]
         Resource = [
-          data.aws_secretsmanager_secret.boss.arn,
-          data.aws_secretsmanager_secret.api_keys.arn
+          aws_ssm_parameter.db_host.arn,
+          aws_ssm_parameter.db_name.arn,
+          aws_ssm_parameter.db_user.arn,
+          aws_ssm_parameter.db_password.arn,
+          aws_ssm_parameter.db_port.arn,
+          aws_ssm_parameter.boss_email.arn,
+          aws_ssm_parameter.boss_password.arn,
+          aws_ssm_parameter.boss_mfa_secret.arn,
+          aws_ssm_parameter.gemini_api_key.arn,
+          aws_ssm_parameter.supabase_url.arn,
+          aws_ssm_parameter.supabase_service_key.arn,
+          aws_ssm_parameter.sentry_dsn.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = [
+          data.aws_kms_alias.ssm.target_key_arn
         ]
       }
     ]
@@ -169,10 +208,10 @@ resource "aws_iam_role_policy_attachment" "lambda_secrets" {
   policy_arn = aws_iam_policy.lambda_secrets.arn
 }
 
-# EventBridge Scheduler permissions for Lambda
+# Scheduler + ECS permissions for Lambda
 resource "aws_iam_policy" "lambda_scheduler" {
   name        = "${var.project_name}-lambda-scheduler-policy"
-  description = "Allow Lambda to create and manage EventBridge schedules"
+  description = "Allow Lambda to create EventBridge schedules and run ECS tasks"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -192,9 +231,23 @@ resource "aws_iam_policy" "lambda_scheduler" {
       {
         Effect = "Allow"
         Action = [
+          "ecs:RunTask"
+        ]
+        Resource = [
+          aws_ecs_task_definition.pipeline.arn_without_revision,
+          "${aws_ecs_task_definition.pipeline.arn_without_revision}:*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "iam:PassRole"
         ]
-        Resource = aws_iam_role.scheduler.arn
+        Resource = [
+          aws_iam_role.ecs_execution.arn,
+          aws_iam_role.ecs_task.arn,
+          aws_iam_role.scheduler_invoke.arn
+        ]
       }
     ]
   })

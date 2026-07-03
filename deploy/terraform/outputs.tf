@@ -98,17 +98,17 @@ output "scheduler_role_arn" {
 
 output "vpc_id" {
   description = "ID of the VPC"
-  value       = var.create_vpc ? aws_vpc.main[0].id : data.aws_vpc.existing[0].id
+  value       = try(aws_vpc.main[0].id, data.aws_vpc.existing[0].id)
 }
 
-output "private_subnet_ids" {
-  description = "IDs of private subnets"
-  value       = var.create_vpc ? aws_subnet.private[*].id : data.aws_subnets.private[0].ids
+output "subnet_ids" {
+  description = "IDs of subnets used by ECS tasks"
+  value       = try(aws_subnet.private[*].id, data.aws_subnets.existing[0].ids)
 }
 
 output "security_group_id" {
   description = "ID of the security group"
-  value       = var.create_vpc ? aws_security_group.main[0].id : data.aws_security_group.existing[0].id
+  value       = try(aws_security_group.main[0].id, data.aws_security_group.existing[0].id)
 }
 
 # =============================================================================

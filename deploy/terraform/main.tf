@@ -57,31 +57,25 @@ data "aws_availability_zones" "available" {
 data "aws_vpc" "existing" {
   count = var.create_vpc ? 0 : 1
 
-  # Support both VPC ID (starts with "vpc-") and Name tag
-  dynamic "filter" {
-    for_each = substr(var.vpc_name, 0, 4) == "vpc-" ? [] : [1]
-    content {
-      name   = "tag:Name"
-      values = [var.vpc_name]
-    }
-  }
-
-  dynamic "filter" {
-    for_each = substr(var.vpc_name, 0, 4) == "vpc-" ? [1] : []
-    content {
-      name   = "vpc-id"
-      values = [var.vpc_name]
-    }
+  # Match by VPC ID, Name tag, or isDefault
+  filter {
+    name   = "isDefault"
+    values = ["true"]
   }
 }
 
-# Reference existing subnets
-data "aws_subnets" "private" {
+# Reference existing subnets (note: default VPC subnets are public)
+data "aws_subnets" "existing" {
   count = var.create_vpc ? 0 : 1
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.existing[0].id]
   }
+}
+
+# KMS key for SSM SecureString decryption
+data "aws_kms_alias" "ssm" {
+  name = "alias/aws/ssm"
 }
 
 # Reference existing security group
@@ -90,20 +84,9 @@ data "aws_security_group" "existing" {
 
   vpc_id = data.aws_vpc.existing[0].id
 
-  # Support both Security Group ID (starts with "sg-") and Name tag
-  dynamic "filter" {
-    for_each = substr(var.security_group_name, 0, 3) == "sg-" ? [] : [1]
-    content {
-      name   = "tag:Name"
-      values = [var.security_group_name]
-    }
-  }
-
-  dynamic "filter" {
-    for_each = substr(var.security_group_name, 0, 3) == "sg-" ? [1] : []
-    content {
-      name   = "group-id"
-      values = [var.security_group_name]
-    }
+  # Match by security group ID or group name
+  filter {
+    name   = substr(var.security_group_name, 0, 3) == "sg-" ? "group-id" : "group-name"
+    values = [var.security_group_name]
   }
 }

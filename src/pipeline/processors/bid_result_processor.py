@@ -10,7 +10,7 @@ import os
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
-from src.config import CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, parse_bidding_window, ACAD_TERM_ID
+from src.config import CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, parse_bidding_window, ACAD_TERM_ID, abbrev_window_to_full
 from src.pipeline.dtos.bid_result_dto import BidResultDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 from src.pipeline.dtos.class_dto import ClassDTO
@@ -198,7 +198,13 @@ class BidResultProcessor:
             self._logger.info("No 'bidding_window' column in raw data - skipping")
             return
 
-        current_window_data = self._raw_data[self._raw_data['bidding_window'] == current_window_name].copy()
+        # Convert abbrev to full format for matching ("R1W1" -> "Round 1 Window 1")
+        full_format = abbrev_window_to_full(current_window_name)
+
+        current_window_data = self._raw_data[
+            (self._raw_data['bidding_window'] == current_window_name) |
+            (self._raw_data['bidding_window'] == full_format)
+        ].copy()
 
         if 'acad_term_id' in current_window_data.columns and self._expected_acad_term_id:
             current_window_data = current_window_data[

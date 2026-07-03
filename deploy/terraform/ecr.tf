@@ -34,7 +34,7 @@ resource "aws_ecr_repository" "scheduler" {
 # ECR LIFECYCLE POLICIES
 # =============================================================================
 
-# Keep last 10 images for pipeline
+# Keep N images for pipeline
 resource "aws_ecr_lifecycle_policy" "pipeline" {
   repository = aws_ecr_repository.pipeline.name
 
@@ -42,11 +42,11 @@ resource "aws_ecr_lifecycle_policy" "pipeline" {
     rules = [
       {
         rulePriority = 1
-        description  = "Keep last 10 images"
+        description  = "Keep last ${var.ecr_image_retention_count} images"
         selection = {
           tagStatus     = "any"
           countType     = "imageCountMoreThan"
-          countNumber   = 10
+          countNumber   = var.ecr_image_retention_count
         }
         action = {
           type = "expire"
@@ -56,7 +56,7 @@ resource "aws_ecr_lifecycle_policy" "pipeline" {
   })
 }
 
-# Keep last 10 images for scheduler
+# Keep N images for scheduler
 resource "aws_ecr_lifecycle_policy" "scheduler" {
   repository = aws_ecr_repository.scheduler.name
 
@@ -64,11 +64,11 @@ resource "aws_ecr_lifecycle_policy" "scheduler" {
     rules = [
       {
         rulePriority = 1
-        description  = "Keep last 10 images"
+        description  = "Keep last ${var.ecr_image_retention_count} images"
         selection = {
           tagStatus     = "any"
           countType     = "imageCountMoreThan"
-          countNumber   = 10
+          countNumber   = var.ecr_image_retention_count
         }
         action = {
           type = "expire"

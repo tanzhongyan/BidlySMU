@@ -81,7 +81,7 @@
 | Service | Purpose | Free Tier? |
 |---------|---------|------------|
 | **Supabase** | PostgreSQL database + Storage | Yes (500MB DB, 1GB Storage) |
-| **AWS** | Lambda, ECS, ECR, Secrets Manager, EventBridge | Yes (12 months) |
+| **AWS** | Lambda, ECS, ECR, SSM Parameter Store, EventBridge | Yes (12 months) |
 | **SMU Account** | BOSS access for scraping | N/A (must be student) |
 
 ### Local Tools Required
@@ -335,43 +335,34 @@ aws configure
    # Enter the Access Key ID and Secret Access Key from the CSV
    ```
 
-### Step B5: Create Secrets in Secrets Manager
+### Step B5: Configure SSM Parameters
 
-Run these commands to create the three required secrets:
+Credentials are managed via **AWS SSM Parameter Store** (free tier), not SSM Parameter Store.
+The Terraform configuration (`ssm.tf`) creates 12 namespaced parameters under `/bidlysmu/`.
 
-```bash
-# 1. Database credentials
-aws secretsmanager create-secret \
-    --name bidlysmu-db-credentials \
-    --description "Supabase PostgreSQL credentials for BidlySMU" \
-    --secret-string '{
-        "DB_HOST": "db.xxxxx.supabase.co",
-        "DB_NAME": "postgres",
-        "DB_USER": "postgres",
-        "DB_PASSWORD": "your-password-here",
-        "DB_PORT": "5432"
-    }'
+Set values in your `terraform.tfvars` file before running `terraform apply`:
 
-# 2. BOSS credentials (your SMU login)
-aws secretsmanager create-secret \
-    --name bidlysmu-boss-credentials \
-    --description "SMU BOSS login credentials" \
-    --secret-string '{
-        "email": "your.email.2023@business.smu.edu.sg",
-        "password": "your-smu-password",
-        "mfa_secret": "YOUR_BASE32_TOTP_SECRET"
-    }'
+```hcl
+# Database (SecureString)
+ssm_db_host     = "db.xxxxx.supabase.co"
+ssm_db_name     = "postgres"
+ssm_db_user     = "postgres"
+ssm_db_password = "your-password-here"
+ssm_db_port     = "5432"             # String (plaintext)
 
-# 3. API keys
-aws secretsmanager create-secret \
-    --name bidlysmu-api-keys \
-    --description "API keys for BidlySMU" \
-    --secret-string '{
-        "gemini_api_key": "your-gemini-api-key-or-empty",
-        "supabase_url": "https://xxxxx.supabase.co",
-        "supabase_service_key": "your-service-role-key",
-        "sentry_dsn": "your-sentry-dsn-or-empty"
-    }'
+# BOSS credentials (SecureString)
+ssm_boss_email     = "your.email.2023@business.smu.edu.sg"
+ssm_boss_password  = "your-smu-password"
+ssm_boss_mfa_secret = "YOUR_BASE32_TOTP_SECRET"
+
+# API keys (SecureString)
+ssm_gemini_api_key       = "your-gemini-api-key-or-empty"
+ssm_supabase_url          = "https://xxxxx.supabase.co"  # String (plaintext)
+ssm_supabase_service_key  = "your-service-role-key"
+ssm_sentry_dsn            = "your-sentry-dsn-or-empty"
+```
+
+All sensitive parameters use `SecureString` (KMS-encrypted). `DB_PORT` and `SUPABASE_URL` are stored as plain `String` since they are not sensitive.
 ```
 
 **How to get MFA Secret:**
@@ -408,9 +399,9 @@ Sentry provides real-time error tracking and performance monitoring for the pipe
 2. Click **Client Keys (DSN)** in the left sidebar
 3. Copy the DSN (looks like `https://xxxxx@o123456.ingest.sentry.io/1234567`)
 
-#### Add DSN to AWS Secrets Manager
+#### Add DSN to SSM Parameter Store
 
-Update the `bidlysmu-api-keys` secret to include the Sentry DSN:
+Set the Sentry DSN in your `terraform.tfvars`:
 
 ```bash
 # Update existing secret (replace with your actual DSN)
@@ -835,7 +826,7 @@ aws ec2 describe-security-groups --filters "Name=vpc-id,Values=vpc-xxxxx"
 | **Lambda** | 1 run/month, 5 min | ~$0.01 |
 | **ECS Fargate** | 4 windows × 3hr = 12hr | ~$1.00 |
 | **ECR** | 2 repos, <1GB | ~$0.10 |
-| **Secrets Manager** | 3 secrets | ~$1.50 |
+| **SSM Parameter Store** | 12 params | ~$0.00 (free tier) |
 | **CloudWatch Logs** | 1GB | ~$0.50 |
 | **EventBridge Scheduler** | Free tier | $0.00 |
 | **NAT Gateway** | If creating new VPC | ~$30.00 |
@@ -883,12 +874,12 @@ aws ec2 describe-security-groups --filters "Name=vpc-id,Values=vpc-xxxxx"
 1. Go to Supabase → **Project Settings** → **Database**
 2. Disable "Enable IPv4 blocking" or add AWS IP range to allowlist
 
-#### Issue: Secrets Manager access denied
+#### Issue: SSM Parameter Store access denied
 
 **Cause**: IAM role missing permissions.
 
 **Solution**:
-- Verify ECS task role has `secretsmanager:GetSecretValue` permission
+- Verify ECS task role has `ssm:GetParameter` and `ssm:GetParameters` permissions
 - Check secret ARN matches in task definition
 
 #### Issue: Docker build fails (Chrome installation)
@@ -949,7 +940,7 @@ terraform destroy
 - [ ] Install and configure AWS CLI
 - [ ] Create IAM user with required policies
 - [ ] Create access keys and configure CLI
-- [ ] Create 3 secrets in Secrets Manager:
+- [ ] Create 3 secrets in SSM Parameter Store:
   - [ ] `bidlysmu-db-credentials`
   - [ ] `bidlysmu-boss-credentials`
   - [ ] `bidlysmu-api-keys`

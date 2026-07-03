@@ -1,0 +1,152 @@
+# =============================================================================
+# BidlySMU CI/CD Pipeline
+# =============================================================================
+# Triggered on push to main branch.
+# Builds and pushes both Docker images to ECR, then updates Lambda + ECS.
+# =============================================================================
+
+name: Deploy BidlySMU
+
+on:
+  push:
+    branches: [main, Feature-Cloud-Run-*]
+  workflow_dispatch:  # Manual trigger
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+  PIPELINE_IMAGE: bidlysmu-pipeline
+  SCHEDULER_IMAGE: bidlysmu-scheduler
+
+jobs:
+  # ===========================================================================
+  # Build & Push Pipeline Image
+  # ===========================================================================
+  build-pipeline:
+    name: Build & Push Pipeline Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "version=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build and push pipeline image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.PIPELINE_ECR_URL }}:${{ steps.meta.outputs.version }}
+            ${{ secrets.PIPELINE_ECR_URL }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Build & Push Scheduler (Lambda) Image
+  # ===========================================================================
+  build-scheduler:
+    name: Build & Push Scheduler Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "version=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      - name: Build and push scheduler image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./lambda/monthly_scheduler/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.SCHEDULER_ECR_URL }}:${{ steps.meta.outputs.version }}
+            ${{ secrets.SCHEDULER_ECR_URL }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # Update Lambda Function
+  # ===========================================================================
+  update-lambda:
+    name: Update Lambda Function
+    runs-on: ubuntu-latest
+    needs: build-scheduler
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Lambda function code
+        run: |
+          aws lambda update-function-code \
+            --function-name bidlysmu-scheduler \
+            --image-uri ${{ secrets.SCHEDULER_ECR_URL }}:${{ needs.build-scheduler.outputs.image_tag }}
+
+  # ===========================================================================
+  # Register New ECS Task Definition Revision
+  # ===========================================================================
+  update-ecs:
+    name: Update ECS Task Definition
+    runs-on: ubuntu-latest
+    needs: build-pipeline
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Register new task definition revision
+        run: |
+          # Fetch current task definition and update just the image tag
+          aws ecs describe-task-definition \
+            --task-definition bidlysmu-pipeline-task \
+            --query 'taskDefinition | {
+              family: family,
+              taskRoleArn: taskRoleArn,
+              executionRoleArn: executionRoleArn,
+              networkMode: networkMode,
+              requiresCompatibilities: requiresCompatibilities,
+              cpu: cpu,
+              memory: memory,
+              runtimePlatform: runtimePlatform,
+              containerDefinitions: containerDefinitions
+            }' \
+            | jq '.containerDefinitions[0].image = "${{ secrets.PIPELINE_ECR_URL }}:${{ needs.build-pipeline.outputs.image_tag }}"' \
+            > /tmp/task-def.json
+
+          aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json

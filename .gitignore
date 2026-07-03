@@ -5,6 +5,7 @@ db_cache/
 ^.env.example
 logs/
 __pycache__/
+.venv/
 
 # script_input: keep most files ignored, track essential input files
 script_input/
@@ -21,6 +22,7 @@ script_output/
 *.tfstate
 *.tfstate.backup
 *.tfvars
+!*.tfvars.example
 *.tfvars.json
 *.tfplan
 .terraformrc

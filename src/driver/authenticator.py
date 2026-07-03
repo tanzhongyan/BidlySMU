@@ -203,6 +203,15 @@ class AutomatedLogin(Authenticator):
 
         wait = WebDriverWait(driver, self._timeout)
 
+        def _save_debug_screenshot(label: str):
+            """Save a screenshot for debugging login failures."""
+            try:
+                path = f"/tmp/login_failure_{label}_{int(time.time())}.png"
+                driver.save_screenshot(path)
+                self._logger.error(f"Screenshot saved: {path}, URL: {driver.current_url}")
+            except Exception:
+                pass
+
         try:
             # Step 1: Navigate to BOSS (redirects to Microsoft login)
             self._logger.info("Navigating to BOSS...")
@@ -210,7 +219,11 @@ class AutomatedLogin(Authenticator):
 
             # Step 2: Enter email on Microsoft login page
             self._logger.info("Waiting for Microsoft login page...")
-            wait.until(EC.presence_of_element_located((By.ID, "i0116")))
+            try:
+                wait.until(EC.presence_of_element_located((By.ID, "i0116")))
+            except TimeoutException:
+                _save_debug_screenshot("ms_login")
+                raise Exception("Step 2 failed: Microsoft login page (i0116) did not load. URL: " + driver.current_url)
             time.sleep(1.5)
 
             self._logger.info(f"Entering email: {creds.email}")
@@ -223,47 +236,88 @@ class AutomatedLogin(Authenticator):
             driver.find_element(By.ID, "idSIButton9").click()
 
             # Step 3: Enter password on SMU ADFS page
+            # Try multiple possible selectors for the password field (SMU may change the page)
             self._logger.info("Waiting for SMU ADFS login page...")
-            wait.until(EC.presence_of_element_located((By.ID, "passwordInput")))
+            password_input = None
+            password_selectors = [
+                (By.ID, "passwordInput"),       # Old SMU ADFS page
+                (By.ID, "i0118"),               # Microsoft password field
+                (By.NAME, "passwd"),            # Generic Microsoft login
+                (By.XPATH, "//input[@type='password']"),  # Any password field
+            ]
+            for by, selector in password_selectors:
+                try:
+                    password_input = WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((by, selector))
+                    )
+                    self._logger.info(f"Found password field: {by}={selector}")
+                    break
+                except TimeoutException:
+                    continue
+
+            if password_input is None:
+                _save_debug_screenshot("adfs_password")
+                raise Exception(
+                    f"Step 3 failed: SMU ADFS password field not found. "
+                    f"Tried: {[s[1] for s in password_selectors]}. URL: {driver.current_url}"
+                )
             time.sleep(1.5)
 
             self._logger.info("Entering password...")
-            password_input = driver.find_element(By.ID, "passwordInput")
             password_input.clear()
             password_input.send_keys(creds.password)
 
-            # Click Sign in button
+            # Click Sign in button — try multiple selectors
+            submit_button = None
+            submit_selectors = [
+                (By.ID, "submitButton"),        # Old SMU ADFS
+                (By.ID, "idSIButton9"),         # Microsoft Next/Sign in
+                (By.XPATH, "//input[@type='submit']"),
+                (By.XPATH, "//button[@type='submit']"),
+            ]
             time.sleep(1)
-            driver.find_element(By.ID, "submitButton").click()
+            for by, selector in submit_selectors:
+                try:
+                    submit_button = driver.find_element(by, selector)
+                    self._logger.info(f"Found submit button: {by}={selector}")
+                    break
+                except Exception:
+                    continue
+
+            if submit_button is None:
+                _save_debug_screenshot("adfs_submit")
+                raise Exception(
+                    f"Step 3 failed: Submit button not found. "
+                    f"Tried: {[s[1] for s in submit_selectors]}. URL: {driver.current_url}"
+                )
+            submit_button.click()
 
             # Step 4: Handle MFA
             self._logger.info("Waiting for MFA challenge...")
             time.sleep(3)
 
-            # Select alternative MFA method
+            # Select alternative MFA method (if Microsoft "Verify your identity" page)
             try:
-                other_way_link = wait.until(
+                other_way_link = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.ID, "signInAnotherWay"))
                 )
                 time.sleep(1)
                 other_way_link.click()
+                self._logger.info("Clicked 'Sign in another way'")
             except TimeoutException:
-                self._logger.info("Alternative MFA link not found, continuing...")
+                self._logger.info("Alternative MFA link not found, checking for OTP directly...")
 
             # Step 5: Select "Use a verification code" option
-            self._logger.info("Selecting 'Use a verification code' option...")
             time.sleep(2)
-
-            # Find the element with data-value="PhoneAppOTP"
             try:
-                verification_code_option = wait.until(
+                verification_code_option = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.XPATH, "//div[@data-value='PhoneAppOTP']"))
                 )
                 time.sleep(1)
                 verification_code_option.click()
+                self._logger.info("Selected 'Use a verification code'")
             except TimeoutException:
-                # Check if we're already on the OTP input page
-                self._logger.info("Verification code option not found, checking if already on OTP input page...")
+                self._logger.info("OTP option selector not found, checking if already on OTP page...")
 
             # Step 6: Generate TOTP and enter it
             self._logger.info("Generating TOTP code...")
@@ -271,29 +325,98 @@ class AutomatedLogin(Authenticator):
             code = totp.now()
             self._logger.info(f"Generated TOTP code: {code}")
 
-            # Wait for OTP input field
+            # Wait for OTP input field — try multiple selectors
             self._logger.info("Entering verification code...")
-            otp_input = wait.until(EC.presence_of_element_located((By.ID, "idTxtBx_SAOTCC_OTC")))
+            otp_input = None
+            otp_selectors = [
+                (By.ID, "idTxtBx_SAOTCC_OTC"),      # Microsoft OTP field
+                (By.ID, "i0118"),                     # Microsoft password/OTP
+                (By.NAME, "otc"),                     # Generic OTC
+                (By.XPATH, "//input[@type='tel']"),   # TOTP often uses tel input
+            ]
+            for by, selector in otp_selectors:
+                try:
+                    otp_input = WebDriverWait(driver, 8).until(
+                        EC.presence_of_element_located((by, selector))
+                    )
+                    self._logger.info(f"Found OTP field: {by}={selector}")
+                    break
+                except TimeoutException:
+                    continue
+
+            if otp_input is None:
+                _save_debug_screenshot("otp_missing")
+                raise Exception(
+                    f"Step 6 failed: OTP input field not found. "
+                    f"Tried: {[s[1] for s in otp_selectors]}. URL: {driver.current_url}"
+                )
             otp_input.clear()
             otp_input.send_keys(code)
 
-            # Step 7: Click Verify button
+            # Step 7: Click Verify/Submit button
             self._logger.info("Clicking Verify button...")
-            verify_button = driver.find_element(By.ID, "idSubmit_SAOTCC_Continue")
-            verify_button.click()
+            verify_button = None
+            verify_selectors = [
+                (By.ID, "idSubmit_SAOTCC_Continue"),
+                (By.ID, "idSIButton9"),
+                (By.XPATH, "//input[@type='submit']"),
+            ]
+            for by, selector in verify_selectors:
+                try:
+                    verify_button = driver.find_element(by, selector)
+                    self._logger.info(f"Found verify button: {by}={selector}")
+                    break
+                except Exception:
+                    continue
 
-            # Step 8: Wait for successful login (BOSS dashboard)
-            self._logger.info("Waiting for BOSS dashboard to load...")
-            wait.until(EC.presence_of_element_located((By.ID, "Label_UserName")))
+            if verify_button is None:
+                _save_debug_screenshot("verify_missing")
+                raise Exception(
+                    f"Step 7 failed: Verify button not found. "
+                    f"Tried: {[s[1] for s in verify_selectors]}. URL: {driver.current_url}"
+                )
+            verify_button.click()
+            self._logger.info("Verify clicked. Waiting for session cookies...")
+            time.sleep(5)
+
+            # Step 8: Navigate directly to BOSS (session is already authenticated)
+            # The Microsoft OAuth form_post redirect may fail in Selenium,
+            # but the session cookies are set after successful MFA.
+            self._logger.info("Navigating directly to BOSS dashboard...")
+            driver.get("https://boss.intranet.smu.edu.sg/")
+            time.sleep(5)
+            self._logger.info(f"After direct navigation: {driver.current_url[:120]}")
+
+            # If redirected back to Microsoft, the session didn't stick
+            if "login.microsoftonline.com" in driver.current_url:
+                _save_debug_screenshot("boss_rejected")
+                raise Exception(
+                    f"BOSS rejected direct navigation — session not authenticated. "
+                    f"URL: {driver.current_url[:120]}"
+                )
+
+            # Wait for BOSS dashboard
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "Label_UserName"))
+                )
+            except TimeoutException:
+                _save_debug_screenshot("boss_dashboard")
+                raise Exception(
+                    f"BOSS dashboard did not load. URL: {driver.current_url[:120]}"
+                )
 
             username = driver.find_element(By.ID, "Label_UserName").text
-            self._logger.info(f"Automated login successful! Logged in as {username}")
+            self._logger.info(f"Login successful! Logged in as {username}")
 
             time.sleep(2)
             return username
 
         except TimeoutException as e:
-            error_msg = f"Login timed out. Element not found: {str(e)}"
+            _save_debug_screenshot("timeout")
+            error_msg = (
+                f"Login timed out. Element: {str(e)[:200]}. URL: {driver.current_url}"
+            )
             self._logger.error(error_msg)
             raise Exception(error_msg)
         except Exception as e:

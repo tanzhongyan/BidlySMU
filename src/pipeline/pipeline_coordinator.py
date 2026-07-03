@@ -9,7 +9,7 @@ import pickle
 from datetime import datetime
 from typing import List
 
-from src.config import ACAD_TERM_ID
+from src.config import ACAD_TERM_ID, RESULTS_DATETIME, dash_format_to_acad_term_id, encode_subterm_for_boss_id
 from src.logging.logger import get_logger
 from src.db.database_helper import DatabaseHelper
 from src.db.adapters import Psycopg2Adapter
@@ -240,9 +240,41 @@ class PipelineCoordinator:
             logger=self._logger
         )
         acad_terms_new, acad_terms_updated = acad_term_processor.process()
+
+        # Fallback: ensure current term exists even if not in scraped data
+        expected_acad_term_id = dash_format_to_acad_term_id(self.config.start_ay_term)
+        existing_ids = {t.id for t in acad_terms_new}
+        acad_cache = self.db_cache.get('acad_term', {})
+        db_ids = set(acad_cache.keys()) if isinstance(acad_cache, dict) else set()
+
+        if expected_acad_term_id not in existing_ids and expected_acad_term_id not in db_ids:
+            # Parse from start_ay_term format "2026-27_T1" -> year_start=2026, year_end=27, term_num=1
+            import re
+            m = re.match(r'(\d{4})-(\d{2})_T(\d+)([AB]?)', self.config.start_ay_term)
+            if m:
+                y_start = int(m.group(1))
+                y_end = int(m.group(2))
+                t_num = m.group(3) + m.group(4)
+                # boss_id uses start year prefix (BOSS convention), with sub-term encoding
+                sub = encode_subterm_for_boss_id(t_num)
+                boss_id = int(f"{y_start}{m.group(3)}{sub}")
+                # Note: start_dt/end_dt are set to None — bidding schedule dates are
+                # results release timestamps, not academic term boundaries.
+                fallback_term = AcadTermDTO(
+                    id=expected_acad_term_id,
+                    acad_year_start=y_start,
+                    acad_year_end=2000 + y_end,
+                    term=t_num,
+                    boss_id=boss_id,
+                    start_dt=None,
+                    end_dt=None
+                )
+                acad_terms_new.append(fallback_term)
+                self._logger.info(f"Created fallback acad_term: {expected_acad_term_id}")
+
         self.results['acad_terms'] = {'new': acad_terms_new, 'updated': acad_terms_updated}
         self.results['acad_term_lookup'] = self._build_lookup('acad_terms', 'id')
-        self._logger.info(f"✅ Processed {len(acad_terms_new)} academic terms")
+        self._logger.info(f"Processed {len(acad_terms_new)} academic terms")
 
         # Process courses
         course_processor = CourseProcessor(
@@ -271,7 +303,9 @@ class PipelineCoordinator:
         bid_window_processor = BidWindowProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
             bid_window_cache=self.db_cache.get('bid_window', {}),
-            expected_acad_term_id="AY" + self.config.start_ay_term.replace('-', '').replace('_', ''),
+            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+            bidding_schedules=self.config.bidding_schedules,
+            results_datetime=RESULTS_DATETIME,
             logger=self._logger
         )
         bid_windows_new, bid_windows_updated = bid_window_processor.process()
@@ -376,7 +410,7 @@ class PipelineCoordinator:
             class_lookup=self.results['class_lookup'],
             bid_window_lookup=self.results['bid_window_lookup'],
             bidding_schedule=bidding_schedule,
-            expected_acad_term_id=self.config.start_ay_term,
+            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
             logger=self._logger
         )
         new_class_avail = class_avail_processor.process()
@@ -392,7 +426,7 @@ class PipelineCoordinator:
             bid_window_lookup=self.results['bid_window_lookup'],
             course_lookup=self.results['course_lookup'],
             bidding_schedule=bidding_schedule,
-            expected_acad_term_id=self.config.start_ay_term,
+            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
             logger=self._logger
         )
         bid_results_new, bid_results_updated = bid_result_processor.process()
@@ -409,7 +443,7 @@ class PipelineCoordinator:
             bid_window_lookup=self.results['bid_window_lookup'],
             multiple_lookup=self._multiple_lookup,
             bidding_schedule=bidding_schedule,
-            expected_acad_term_id=self.config.start_ay_term,
+            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
             model_dir='models',
             logger=self._logger
         )

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional, Protocol
 
+from src.config import ROUND_ORDER
+
 
 @dataclass(frozen=True)
 class TrubaConfig:
@@ -35,22 +37,54 @@ class TrubaConfig:
 
 @dataclass(frozen=True)
 class BossEvent:
-    """Immutable BOSS bidding event."""
+    """Immutable BOSS bidding event (window or results)."""
     term: str
-    datetime: str
     abbrev: str
     title: str
     is_results: bool
+    start_dt: Optional[str] = None   # ISO 8601: opensAt (window) or resultsAt (results)
+    end_dt: Optional[str] = None     # ISO 8601: closesAt (window only, None for results)
 
     def to_dict(self) -> Dict:
         """Convert to dictionary format for serialization."""
         return {
             "term": self.term,
-            "datetime": self.datetime,
             "abbrev": self.abbrev,
             "title": self.title,
-            "is_results": self.is_results
+            "is_results": self.is_results,
+            "start_dt": self.start_dt,
+            "end_dt": self.end_dt,
         }
+
+
+@dataclass(frozen=True)
+class BossWindow:
+    """Paired BOSS bidding window with all three timeline dates."""
+    term: str
+    abbrev: str
+    title: str
+    opens_at: str     # ISO 8601 in SGT
+    closes_at: str    # ISO 8601 in SGT
+    results_at: str   # ISO 8601 in SGT
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary format for serialization."""
+        return {
+            "term": self.term,
+            "abbrev": self.abbrev,
+            "title": self.title,
+            "opens_at": self.opens_at,
+            "closes_at": self.closes_at,
+            "results_at": self.results_at,
+        }
+
+    def to_schedule_entry(self) -> list:
+        """Convert to legacy schedule entry format for backward compatibility.
+
+        Extended format: [results_at, title, abbrev, opens_at, closes_at]
+        Old code reading index 0-2 still works; new code reads 3-4 for opens/closes.
+        """
+        return [self.results_at, self.title, self.abbrev, self.opens_at, self.closes_at]
 
 
 class TrubaClientInterface(Protocol):
@@ -113,13 +147,13 @@ class TrubaClient:
 
     def fetch_boss_events(self) -> List[BossEvent]:
         """
-        Fetch only BOSS bidding events (Results events only).
+        Fetch all BOSS events (both Window and Results) from Trumba API.
 
-        Results events represent the actual bidding result release times.
-        Window events are excluded as they only define the bidding period.
+        Window events provide opensAt/closesAt (startDateTime/endDateTime).
+        Results events provide resultsAt (startDateTime).
 
         Returns:
-            List of BossEvent objects
+            List of BossEvent objects (both window and results events)
 
         Raises:
             requests.RequestException: If HTTP request fails
@@ -134,15 +168,71 @@ class TrubaClient:
 
         return boss_events
 
+    def fetch_boss_windows(self) -> List[BossWindow]:
+        """
+        Fetch and pair BOSS events into complete bid windows with all three dates.
+
+        Matches Window events (opensAt/closesAt) with their corresponding
+        Results events (resultsAt) by term + abbrev.
+
+        Returns:
+            List of BossWindow objects with opensAt, closesAt, resultsAt
+
+        Raises:
+            requests.RequestException: If HTTP request fails
+        """
+        all_events = self.fetch_boss_events()
+
+        # Separate into windows and results
+        windows_by_key: Dict[str, BossEvent] = {}
+        results_by_key: Dict[str, BossEvent] = {}
+
+        for event in all_events:
+            key = f"{event.term}|{event.abbrev}"
+            if event.is_results:
+                results_by_key[key] = event
+            else:
+                windows_by_key[key] = event
+
+        # Pair windows with their results
+        paired: List[BossWindow] = []
+        for key, window_event in windows_by_key.items():
+            results_event = results_by_key.get(key)
+            if results_event and window_event.start_dt and window_event.end_dt:
+                paired.append(BossWindow(
+                    term=window_event.term,
+                    abbrev=window_event.abbrev,
+                    title=window_event.title,
+                    opens_at=window_event.start_dt,
+                    closes_at=window_event.end_dt,
+                    results_at=results_event.start_dt,
+                ))
+
+        # Sort by term, then by abbrev (R1W1, R1AW1, etc.)
+        def sort_key(bw: BossWindow) -> tuple:
+            # Extract round prefix for ordering (e.g., "R1AW1" → "R1A")
+            import re
+            m = re.match(r'(R\d+[A-F]?)W\d+', bw.abbrev)
+            round_prefix = m.group(1) if m else bw.abbrev
+            # Strip "R" prefix for centralized ROUND_ORDER lookup
+            round_key = round_prefix.lstrip('R') if round_prefix.startswith('R') else round_prefix
+            return (bw.term, ROUND_ORDER.get(round_key, 99), bw.abbrev)
+
+        paired.sort(key=sort_key)
+        return paired
+
     def _parse_boss_event(self, event_data: Dict) -> Optional[BossEvent]:
         """
         Parse a single BOSS event from API response.
+
+        Handles both Window events (provide opensAt/closesAt) and
+        Results events (provide resultsAt).
 
         Args:
             event_data: Event dictionary from API
 
         Returns:
-            BossEvent if valid BOSS Results event, None otherwise
+            BossEvent if valid BOSS event, None otherwise
         """
         try:
             title = event_data.get("title", "")
@@ -151,18 +241,22 @@ class TrubaClient:
             if "BOSS" not in title.upper():
                 return None
 
-            # Only process Results events (actual result release times)
+            # Get start and end datetimes from Trumba
+            start_str = event_data.get("startDateTime")
+            end_str = event_data.get("endDateTime")
+
+            # Parse start datetime (always present)
+            if start_str:
+                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+            else:
+                return None
+
+            # Parse end datetime (present for Window events, may be absent for Results)
+            end_dt = None
+            if end_str:
+                end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+
             is_results = "RESULTS" in title.upper()
-            if not is_results:
-                return None
-
-            # Get datetime (startDateTime for Results events)
-            datetime_str = event_data.get("startDateTime")
-            if not datetime_str:
-                return None
-
-            # Parse datetime
-            parsed_dt = datetime.fromisoformat(datetime_str.replace("Z", "+00:00"))
 
             # Extract term
             term = self._extract_term(event_data)
@@ -171,15 +265,16 @@ class TrubaClient:
             round_info, window_info = self._parse_title(title)
             abbrev = f"{round_info}{window_info}"
 
-            # Clean title (remove "Results" suffix)
+            # Clean title (remove "Results" suffix for consistency)
             clean_title = title.replace(" Results", "").strip()
 
             return BossEvent(
                 term=term,
-                datetime=parsed_dt.isoformat(),
                 abbrev=abbrev,
                 title=clean_title,
-                is_results=is_results
+                is_results=is_results,
+                start_dt=start_dt.isoformat(),
+                end_dt=end_dt.isoformat() if end_dt else None,
             )
 
         except Exception:
@@ -250,6 +345,11 @@ class TrubaClient:
         """
         Parse BOSS event title to extract round and window abbreviations.
 
+        Handles:
+        - Regular rounds: "BOSS Round 1A Window 1 Results" -> ("R1A", "W1")
+        - Incoming Exchange: "BOSS Incoming Exchange Round 1C Window 1" -> ("R1C", "W1")
+        - Incoming Freshmen: "BOSS Incoming Freshmen Round 1 Window 1" -> ("R1F", "W1")
+
         Args:
             title: Event title (e.g., "BOSS Round 1A Window 1 Results")
 
@@ -257,7 +357,7 @@ class TrubaClient:
             tuple: (round_abbrev, window_abbrev) e.g., ("R1A", "W1")
         """
         match = re.search(
-            r"Round\s+(\d+)([A-B]?)\s+Window\s+(\d+)",
+            r"Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)",
             title,
             re.IGNORECASE
         )
@@ -266,6 +366,14 @@ class TrubaClient:
             round_num = match.group(1)
             round_suffix = match.group(2).upper() if match.group(2) else ""
             window_num = match.group(3)
+
+            # Add distinguishing suffix for Incoming events to prevent
+            # collision with regular bidding rounds (e.g., Incoming Freshmen
+            # Round 1 vs regular Round 1 both map to R1W1 otherwise)
+            if "Incoming" in title:
+                if "Freshmen" in title and not round_suffix:
+                    round_suffix = "F"
+
             return (f"R{round_num}{round_suffix}", f"W{window_num}")
 
         return ("R1", "W1")

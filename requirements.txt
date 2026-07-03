@@ -7,7 +7,7 @@ xlrd==2.0.1
 openpyxl
 psycopg2-binary
 webdriver-manager
-pywin32
+supabase
 python-dotenv
 thefuzz
 google-genai
