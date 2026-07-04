@@ -5,6 +5,7 @@ db_cache/
 ^.env.example
 logs/
 __pycache__/
+.venv/
 
 # script_input: keep most files ignored, track essential input files
 script_input/
@@ -15,3 +16,14 @@ script_input/
 
 # script_output: entirely ignored (pipeline outputs, models, etc)
 script_output/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+*.tfvars.json
+*.tfplan
+.terraformrc
+terraform.rc

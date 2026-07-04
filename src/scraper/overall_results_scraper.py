@@ -26,7 +26,7 @@ from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.authenticator import Authenticator
 from src.logging.logger import get_logger
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
-from src.config import TERM_DISPLAY_MAP, PREVIOUS_WINDOW_NAME, START_AY_TERM_DISPLAY, START_AY_TERM
+from src.config import TERM_DISPLAY_MAP, PREVIOUS_WINDOW_NAME, START_AY_TERM_DISPLAY, START_AY_TERM, dash_format_to_display_format, parse_bidding_window
 
 
 @dataclass
@@ -60,9 +60,7 @@ class OverallResultsScraper(AbstractScraper):
 
     def _transform_term_format(self, short_term: str) -> str:
         """Convert '2025-26_T3A' -> '2025-26 Term 3A' for BOSS website dropdown."""
-        year_part, term_part = short_term.split('_')  # '2025-26', 'T3A'
-        full_term_name = TERM_DISPLAY_MAP.get(term_part, term_part)  # 'Term 3A'
-        return f"{year_part} {full_term_name}"
+        return dash_format_to_display_format(short_term)
 
     def _get_website_term(self, dash_term: str) -> str:
         """Get the website display term for BOSS dropdown.
@@ -170,12 +168,9 @@ class OverallResultsScraper(AbstractScraper):
             prev_window = PREVIOUS_WINDOW_NAME
             if prev_window:
                 self._logger.info(f"Using PREVIOUS_WINDOW_NAME from config: {prev_window}")
-                normalized = prev_window.replace("Incoming Exchange ", "").replace("Incoming Freshmen ", "")
-                normalized = normalized.replace("Rnd ", "Round ").replace("Win ", "Window ")
-
-                match = re.search(r'Round\s+(\d+[A-Z]*)\s+Window\s+(\d+)', normalized)
-                if match:
-                    return match.group(1), match.group(2)
+                round_str, window_num = parse_bidding_window(prev_window, allow_abbrev=True)
+                if round_str and window_num:
+                    return round_str, str(window_num)
         except Exception:
             pass
 
@@ -189,7 +184,8 @@ class OverallResultsScraper(AbstractScraper):
         schedule = self._config.bidding_schedules[self._config.start_ay_term]
 
         active_phase = None
-        for schedule_time, phase_name, _ in schedule:
+        for entry in schedule:
+            schedule_time, phase_name = entry[0], entry[1]
             if current_time >= schedule_time:
                 active_phase = (schedule_time, phase_name)
             else:
@@ -203,12 +199,9 @@ class OverallResultsScraper(AbstractScraper):
         self._logger.info(f"Current bidding phase: {phase_name}")
 
         # Parse phase name to extract round and window
-        normalized = phase_name.replace("Incoming Exchange ", "").replace("Incoming Freshmen ", "")
-        normalized = normalized.replace("Rnd ", "Round ").replace("Win ", "Window ")
-
-        match = re.search(r'Round\s+(\d+[A-Z]*)\s+Window\s+(\d+)', normalized)
-        if match:
-            return match.group(1), match.group(2)
+        round_str, window_num = parse_bidding_window(phase_name, allow_abbrev=True)
+        if round_str and window_num:
+            return round_str, str(window_num)
 
         return None, None
 

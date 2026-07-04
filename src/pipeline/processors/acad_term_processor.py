@@ -9,6 +9,7 @@ import logging
 
 from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.acad_term_dto import AcadTermDTO
+from src.config import strip_term_prefix
 
 
 class AcadTermProcessor(AbstractProcessor):
@@ -52,7 +53,7 @@ class AcadTermProcessor(AbstractProcessor):
 
             first_row = rows[0]
             term = first_row.get('term', '')
-            clean_term = str(term)[1:] if str(term).startswith(self.TERM_PREFIX) else str(term)
+            clean_term = strip_term_prefix(str(term))
 
             dto = AcadTermDTO(
                 id=acad_term_id,

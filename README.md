@@ -286,7 +286,253 @@ V5 replaces the LLM approach entirely with `ProfessorResolutionService` — a de
 
 ---
 
-## **8. Crediting the Author**
+## **8. Cloud Deployment (AWS Lambda + ECS Fargate)**
+
+### Architecture Overview
+
+This pipeline uses a hybrid serverless architecture:
+
+1. **Monthly Scheduler (Lambda)**: Scrapes SMU SharePoint calendar, updates bidding schedules
+2. **Pipeline Execution (ECS Fargate)**: Runs the full scraping + processing pipeline
+
+### Prerequisites
+
+1. **AWS Account** with permissions for Lambda, ECS, ECR, SSM Parameter Store, EventBridge
+2. **Supabase Account** for PostgreSQL database and Storage
+3. **Docker** installed locally for building images
+
+### Required Configuration
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `bidding_schedules.json` | Supabase Storage | Bidding window schedules |
+| `professor_lookup.csv` | Supabase Storage | Professor name mappings (optional) |
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DB_HOST` | Yes | PostgreSQL host (Supabase) |
+| `DB_NAME` | Yes | Database name |
+| `DB_USER` | Yes | Database user |
+| `DB_PASSWORD` | Yes | Database password |
+| `DB_PORT` | Yes | Database port |
+| `BOSS_EMAIL` | Yes | SMU school email |
+| `BOSS_PASSWORD` | Yes | SMU account password |
+| `BOSS_MFA_SECRET` | Yes | Base32 TOTP secret from Microsoft Authenticator |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | Yes | Supabase service role key |
+| `GEMINI_API_KEY` | No | Google Gemini API for surname refinement |
+| `SENTRY_DSN` | No | Sentry error monitoring |
+
+### Deployment Steps
+
+1. **Create ECR Repository**
+   ```bash
+   aws ecr create-repository --repository-name bidlysmu-pipeline
+   ```
+
+2. **Build and Push Docker Image**
+   ```bash
+   docker build -t bidlysmu-pipeline .
+   docker tag bidlysmu-pipeline:latest ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:latest
+   docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:latest
+   ```
+
+3. **Configure SSM Parameter Store Secrets (before Terraform apply)**
+
+   The Terraform configuration (`ssm.tf`) manages 12 SSM parameters under `/bidlysmu/`. Set values in `terraform.tfvars`:
+
+   ```hcl
+   # Database
+   ssm_db_host     = "your-db-host"
+   ssm_db_name     = "postgres"
+   ssm_db_user     = "postgres"
+   ssm_db_password = "your-password"
+   ssm_db_port     = "5432"
+
+   # BOSS credentials
+   ssm_boss_email     = "your-email@smu.edu.sg"
+   ssm_boss_password  = "your-password"
+   ssm_boss_mfa_secret = "your-totp-secret"
+
+   # API keys
+   ssm_gemini_api_key       = "your-gemini-key"
+   ssm_supabase_url          = "https://xxxxx.supabase.co"
+   ssm_supabase_service_key  = "your-service-role-key"
+   ssm_sentry_dsn            = "your-sentry-dsn"
+   ```
+
+   All sensitive parameters use `SecureString` (KMS-encrypted). `DB_PORT` and `SUPABASE_URL` are stored as plain `String`.
+
+4. **Create Supabase Storage Bucket**
+   - Bucket name: `bidlysmu-files`
+   - Upload initial `bidding_schedules.json`
+
+5. **Deploy Lambda Function (Container Image)**
+   ```bash
+   cd lambda/monthly_scheduler
+   docker build -t bidlysmu-scheduler .
+   aws ecr create-repository --repository-name bidlysmu-scheduler
+   docker tag bidlysmu-scheduler:latest ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest
+   docker push ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest
+   aws lambda create-function \
+     --function-name bidlysmu-scheduler \
+     --package-type Image \
+     --code ImageUri=ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-scheduler:latest \
+     --role arn:aws:iam::account:role/lambda-execution-role \
+     --timeout 600 \
+     --memory-size 1024
+   ```
+
+6. **Register ECS Task Definition**
+   ```bash
+   aws ecs register-task-definition --cli-input-json file://deploy/ecs-task-definition.json
+   ```
+
+7. **Create Monthly EventBridge Schedule for Lambda**
+   ```bash
+   aws scheduler create-schedule \
+     --name bidlysmu-monthly-scheduler \
+     --schedule-expression "cron(0 8 1 * ? *)" \
+     --target '{"Arn": "arn:aws:lambda:region:account:function:bidlysmu-scheduler", "RoleArn": "arn:aws:iam::account:role/scheduler-role"}'
+   ```
+
+### Scraping Timing Logic
+
+- **R1W1 (first window)**: Scrape 2 weeks before window starts
+- **Subsequent windows**: Scrape 3 hours AFTER previous window's results are released
+  - Example: R1W1 results at Jul 8, 2pm → R1AW1 scrape at Jul 8, 5pm
+
+### Supabase Storage File Structure
+
+| Path | Purpose |
+|------|---------|
+| `schedules/bidding_schedules.json` | Bidding window schedules |
+| `schedules/existing_schedules.json` | EventBridge schedule tracking |
+| `input/{term}/{window}/raw_data.xlsx` | Scraped class data |
+| `input/{term}/{window}/overallBossResults/*.xlsx` | Bidding results |
+| `output/{term}/{window}/*.csv` | Pipeline output files |
+| `classTimingsFull/{acad_term}/{term_window}/*.html` | Scraped HTML files |
+
+### Cost Estimation
+
+| Component | Monthly Cost (Est.) |
+|-----------|---------------------|
+| Lambda (1 run/month, 10 min) | ~$0.01 |
+| ECS Fargate (4 windows × 3hr = 12hr/month) | ~$1.00 |
+| SSM Parameter Store (12 params) | ~$0.00 (free tier) |
+| CloudWatch Logs (1GB) | ~$0.50 |
+| EventBridge Scheduler | ~$0.00 (free tier) |
+| **Total AWS** | **~$1.50/month** |
+
+**Supabase Storage:** Included in AfterClass plan (100GB, current usage 450MB)
+
+### Terraform Deployment (Recommended)
+
+Terraform configuration is provided for automated infrastructure deployment.
+
+**Files:**
+```
+deploy/terraform/
+├── main.tf              # Provider, data sources
+├── variables.tf         # Input variables
+├── outputs.tf           # Output values (ECR URLs, ARNs)
+├── ecr.tf               # ECR repositories
+├── ecs.tf               # ECS cluster, task definition
+├── lambda.tf            # Lambda function, EventBridge schedule
+├── iam.tf               # IAM roles and policies
+├── network.tf           # VPC, subnets (optional)
+├── ssm.tf               # SSM Parameter Store parameters
+└── terraform.tfvars.example  # Example configuration
+```
+
+**Quick Start:**
+
+1. **Copy and configure variables:**
+   ```bash
+   cd deploy/terraform
+   cp terraform.tfvars.example terraform.tfvars
+   # Edit terraform.tfvars with your values
+   ```
+
+2. **Initialize and apply Terraform:**
+   ```bash
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+
+4. **Build and push Docker images (use output URLs):**
+   ```bash
+   # Terraform will output the exact commands
+   terraform output docker_push_commands
+   ```
+
+5. **Upload initial files to Supabase Storage:**
+   - `schedules/bidding_schedules.json`
+   - `input/professor_lookup.csv` (optional)
+
+**Using Existing VPC:**
+
+Set in `terraform.tfvars`:
+```hcl
+create_vpc          = false
+vpc_name            = "your-vpc-name"
+security_group_name = "your-security-group-name"
+```
+
+**Cost Savings:** Terraform creates only the resources you need. Using an existing VPC saves ~$30/month on NAT Gateway costs.
+
+---
+
+## **9. CI/CD Pipeline (GitHub Actions)**
+
+The `.github/workflows/deploy.yml` workflow automatically builds and deploys Docker images on push to `main` or `Feature-Cloud-Run-*` branches.
+
+### Pipeline Jobs
+
+| Job | Depends On | What It Does |
+|-----|-----------|--------------|
+| `build-pipeline` | — | Builds the main Docker image and pushes to `PIPELINE_ECR_URL` |
+| `build-scheduler` | — | Builds the Lambda Docker image and pushes to `SCHEDULER_ECR_URL` |
+| `update-lambda` | `build-scheduler` | Updates the `bidlysmu-scheduler` Lambda function code |
+| `update-ecs` | `build-pipeline` | Fetches the current ECS task definition, replaces the image tag, registers a new revision |
+
+### Execution Model
+
+The CI/CD pipeline only **builds and publishes** Docker images. Actual pipeline execution is triggered separately:
+
+1. The Lambda scheduler runs on a monthly cron (or manual invocation)
+2. It creates one-time EventBridge schedules at the calculated scrape times
+3. Those schedules invoke the Lambda in "run_pipeline" mode
+4. The Lambda calls `ecs.run_task()` to launch the ECS Fargate pipeline
+
+### Required GitHub Secrets
+
+| Secret | Purpose | How to Obtain |
+|--------|---------|---------------|
+| `AWS_REGION` | AWS region (default: `ap-southeast-1`) | Set to your deployment region |
+| `AWS_ACCESS_KEY_ID` | IAM user access key | Create an IAM user with ECR push, Lambda update, and ECS register permissions |
+| `AWS_SECRET_ACCESS_KEY` | Corresponding secret key | Companion to `AWS_ACCESS_KEY_ID` |
+| `PIPELINE_ECR_URL` | ECR repo for the pipeline image | From `terraform output ecr_pipeline_url` |
+| `SCHEDULER_ECR_URL` | ECR repo for the scheduler image | From `terraform output ecr_scheduler_url` |
+
+### Trigger Branches
+
+- **`main`**: Production deployment
+- **`Feature-Cloud-Run-*`**: Feature branch testing — matches the pattern `Feature-Cloud-Run-*` (e.g., `Feature-Cloud-Run-migration`)
+- **Manual**: Use `workflow_dispatch` from the Actions tab
+
+### Prerequisites
+
+Before the CI/CD pipeline can deploy, you must first:
+1. Run `terraform apply` to create ECR repositories, the Lambda function, and the ECS task definition
+2. Configure all 5 GitHub Secrets in **Settings → Secrets and variables → Actions**
+
+---
+
+## **10. Crediting the Author**
 
 If you use this project or its models in your work, please credit **Tan Zhong Yan** in the following way on GitHub:
 

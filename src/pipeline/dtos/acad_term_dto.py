@@ -34,3 +34,16 @@ class AcadTermDTO:
     def to_db_row(self) -> dict:
         """Convert to database row."""
         return {self.COLUMNS[k]: getattr(self, k) for k in self.COLUMNS}
+
+    @classmethod
+    def from_dict(cls, item: dict) -> 'AcadTermDTO':
+        """Create an AcadTermDTO from a dictionary (e.g., from database cache)."""
+        return cls(
+            id=str(item.get('id', '')),
+            acad_year_start=int(item.get('acad_year_start', 0)),
+            acad_year_end=int(item.get('acad_year_end', 0)),
+            term=str(item.get('term', '')),
+            boss_id=item.get('boss_id'),
+            start_dt=item.get('start_dt'),
+            end_dt=item.get('end_dt'),
+        )

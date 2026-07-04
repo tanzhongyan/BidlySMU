@@ -1,0 +1,54 @@
+{
+  "family": "bidlysmu-pipeline-task",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT:role/BidlySMUTaskRole",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/BidlySMUExecutionRole",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "ephemeralStorage": {
+    "sizeInGiB": 30
+  },
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "bidlysmu-pipeline",
+      "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/bidlysmu-pipeline:v1.0.0",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bidlysmu-pipeline",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "environment": [
+        {"name": "ACAD_TERM_ID", "value": "AY202526T3A"},
+        {"name": "PYTHONUTF8", "value": "1"},
+        {"name": "PYTHONIOENCODING", "value": "utf-8"},
+        {"name": "USE_SUPABASE_STORAGE", "value": "true"}
+      ],
+      "secrets": [
+        {"name": "DB_HOST", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/DB_HOST"},
+        {"name": "DB_NAME", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/DB_NAME"},
+        {"name": "DB_USER", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/DB_USER"},
+        {"name": "DB_PASSWORD", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/DB_PASSWORD"},
+        {"name": "DB_PORT", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/DB_PORT"},
+        {"name": "BOSS_EMAIL", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/BOSS_EMAIL"},
+        {"name": "BOSS_PASSWORD", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/BOSS_PASSWORD"},
+        {"name": "BOSS_MFA_SECRET", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/BOSS_MFA_SECRET"},
+        {"name": "GEMINI_API_KEY", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/GEMINI_API_KEY"},
+        {"name": "SUPABASE_URL", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/SUPABASE_URL"},
+        {"name": "SUPABASE_SERVICE_KEY", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/SUPABASE_SERVICE_KEY"},
+        {"name": "SENTRY_DSN", "valueFrom": "arn:aws:ssm:REGION:ACCOUNT:parameter/bidlysmu/SENTRY_DSN"}
+      ],
+      "linuxParameters": {
+        "initProcessEnabled": true
+      }
+    }
+  ]
+}

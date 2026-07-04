@@ -1,0 +1,81 @@
+# =============================================================================
+# TERRAFORM VARIABLES - EXAMPLE CONFIGURATION
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values.
+# NOTE: terraform.tfvars is gitignored - never commit real secrets.
+# =============================================================================
+
+# AWS Configuration
+aws_region   = "ap-southeast-1"
+environment  = "staging"
+project_name = "bidlysmu"
+
+# =============================================================================
+# VPC / NETWORKING
+# =============================================================================
+# Option 1: Use existing default VPC (recommended - free, uses public subnets)
+create_vpc          = false
+security_group_name = "default"
+
+# Option 2: Create new VPC (costs ~$30/month for NAT Gateway)
+# create_vpc = true
+# vpc_cidr   = "10.0.0.0/16"
+
+# =============================================================================
+# ECS CONFIGURATION (right-sized for cost optimization)
+# =============================================================================
+ecs_cpu             = 1024
+ecs_memory          = 2048
+acad_term_id        = "AY202526T3A"
+pipeline_image_tag  = "v1.0.0"
+ecs_container_name  = "bidlysmu-pipeline"
+
+# =============================================================================
+# LAMBDA CONFIGURATION (lightweight - Trumba API only, no Selenium)
+# =============================================================================
+lambda_memory       = 512
+lambda_timeout      = 300
+scheduler_image_tag = "v1.0.0"
+
+# =============================================================================
+# TRUBA API CONFIGURATION
+# =============================================================================
+truba_api_url   = "https://www.trumba.com/calendars/SMU_RO_Acad.json"
+months_ahead    = 12
+
+# =============================================================================
+# EVENTBRIDGE SCHEDULER
+# =============================================================================
+# Monthly cron: 1st of each month at 8am SGT (00:00 UTC)
+monthly_schedule_cron = "cron(0 0 1 * ? *)"
+
+# =============================================================================
+# SSM PARAMETER STORE (free tier, replaces Secrets Manager)
+# =============================================================================
+# These are stored as SSM SecureString parameters under /bidlysmu/
+# No manual creation needed - Terraform creates them from these values.
+# =============================================================================
+
+# Database credentials
+ssm_db_host     = "aws-1-ap-southeast-2.pooler.supabase.com"
+ssm_db_name     = "postgres"
+ssm_db_user     = "postgres.username"
+ssm_db_password = "your-db-password-here"
+ssm_db_port     = "5432"
+
+# BOSS credentials (SMU bidding portal)
+ssm_boss_email      = "your-email@smu.edu.sg"
+ssm_boss_password   = "your-boss-password"
+ssm_boss_mfa_secret = "your-mfa-secret"
+
+# API keys
+ssm_gemini_api_key       = "your-gemini-api-key"
+ssm_supabase_url         = "https://username.supabase.co"
+ssm_supabase_service_key = "your-supabase-service-key"
+ssm_sentry_dsn           = "https://your-sentry-dsn@sentry.io/your-project"
+
+# =============================================================================
+# SUPABASE (for Lambda environment variables)
+# =============================================================================
+supabase_url         = "https://username.supabase.co"
+supabase_service_key = "your-supabase-service-key"

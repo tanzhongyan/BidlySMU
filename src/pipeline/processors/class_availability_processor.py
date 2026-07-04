@@ -6,7 +6,7 @@ Processes ONLY current window t(N) from raw_data.xlsx.
 from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
-from src.config import CURRENT_WINDOW_NAME, parse_bidding_window
+from src.config import CURRENT_WINDOW_NAME, parse_bidding_window, abbrev_window_to_full
 from src.pipeline.dtos.class_availability_dto import ClassAvailabilityDTO
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
@@ -54,7 +54,10 @@ class ClassAvailabilityProcessor:
         self._process_window_data(current_window_data)
 
     def _filter_to_current_window(self, current_window_name: str) -> pd.DataFrame:
-        """Filter raw_data to only records for the current window and term."""
+        """Filter raw_data to only records for the current window and term.
+
+        Handles both abbrev format ("R1W1") and full format ("Round 1 Window 1").
+        """
         if self._raw_data.empty:
             return self._raw_data
 
@@ -62,12 +65,23 @@ class ClassAvailabilityProcessor:
             return self._raw_data
 
         original_count = len(self._raw_data)
-        filtered = self._raw_data[self._raw_data['bidding_window'] == current_window_name].copy()
+
+        # Convert abbrev to full format for matching against scraped data
+        # "R1W1" -> "Round 1 Window 1", "R1AW2" -> "Round 1A Window 2"
+        full_format = abbrev_window_to_full(current_window_name)
+
+        # Match against both formats
+        filtered = self._raw_data[
+            (self._raw_data['bidding_window'] == current_window_name) |
+            (self._raw_data['bidding_window'] == full_format)
+        ].copy()
+
+        self._logger.info(f"Window filter: '{current_window_name}' / '{full_format}' matched {len(filtered)} of {original_count} rows")
 
         if 'acad_term_id' in filtered.columns and self._expected_acad_term_id:
             before_term_filter = len(filtered)
             filtered = filtered[filtered['acad_term_id'] == self._expected_acad_term_id]
-            self._logger.info(f"Filtered data: {original_count} -> {before_term_filter} (window) -> {len(filtered)} (window + term)")
+            self._logger.info(f"Term filter: {before_term_filter} -> {len(filtered)} rows for {self._expected_acad_term_id}")
 
         return filtered
 
