@@ -157,7 +157,8 @@ class ClassScraper(AbstractScraper):
         schedule = self._config.bidding_schedules.get(schedule_key)
         round_folder = None
         if schedule and app_config.CURRENT_WINDOW_NAME:
-            for results_date, window_name, abbrev in schedule:
+            for entry in schedule:
+                results_date, window_name, abbrev = entry[0], entry[1], entry[2]
                 if window_name == app_config.CURRENT_WINDOW_NAME:
                     round_folder = f"{schedule_key}_{abbrev}"
                     break

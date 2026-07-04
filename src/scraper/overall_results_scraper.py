@@ -184,7 +184,8 @@ class OverallResultsScraper(AbstractScraper):
         schedule = self._config.bidding_schedules[self._config.start_ay_term]
 
         active_phase = None
-        for schedule_time, phase_name, _ in schedule:
+        for entry in schedule:
+            schedule_time, phase_name = entry[0], entry[1]
             if current_time >= schedule_time:
                 active_phase = (schedule_time, phase_name)
             else:

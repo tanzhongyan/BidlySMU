@@ -125,6 +125,13 @@ class BidWindowProcessor(AbstractProcessor):
         relevant_cols = self._raw_data[['acad_term_id', 'bidding_window']].dropna(
         ).drop_duplicates()
 
+        # Only process the expected term's windows — prevents old-term leakage
+        # from accumulated raw_data.xlsx (append-only file)
+        if self._expected_acad_term_id:
+            relevant_cols = relevant_cols[
+                relevant_cols['acad_term_id'] == self._expected_acad_term_id
+            ]
+
         # Discover all windows using itertuples (much faster than iterrows)
         for row in relevant_cols.itertuples(index=False):
             acad_term_id = row.acad_term_id
@@ -187,6 +194,15 @@ class BidWindowProcessor(AbstractProcessor):
                         self._logger.info(
                             f"Bid window already exists: {acad_term_id} Round {round_str} Window {window_num}"
                         )
+                    continue
+
+                # Skip windows with no results_at — prevents NaT from reaching PostgreSQL
+                # This is a defensive guard; the term filter above is the primary fix
+                if results_at is None:
+                    self._logger.warning(
+                        f"Skipping bid window {acad_term_id} Round {round_str} Window {window_num} "
+                        f"— no results_at (missing from bidding_schedules.json)"
+                    )
                     continue
 
                 # Create new BidWindowDTO with timeline dates
