@@ -160,6 +160,7 @@ class BidWindowProcessor(AbstractProcessor):
 
         # Process each term's windows
         results_new = []
+        results_updated = []
         for acad_term_id in sorted(found_windows.keys()):
             windows_for_term = found_windows[acad_term_id]
             sorted_windows = sorted(
@@ -190,15 +191,31 @@ class BidWindowProcessor(AbstractProcessor):
                         existing['opens_at'] = opens_at
                         existing['closes_at'] = closes_at
                         existing['results_at'] = results_at
+                        # Return as an updated DTO so PipelineCoordinator persists it
+                        existing_id = existing.get('id') if isinstance(existing, dict) else None
+                        if existing_id is not None:
+                            results_updated.append(BidWindowDTO(
+                                id=existing_id,
+                                acad_term_id=acad_term_id,
+                                round=round_str,
+                                window=window_num,
+                                opens_at=opens_at,
+                                closes_at=closes_at,
+                                results_at=results_at,
+                            ))
                     else:
                         self._logger.info(
                             f"Bid window already exists: {acad_term_id} Round {round_str} Window {window_num}"
                         )
                     continue
 
-                # Skip windows with no results_at — prevents NaT from reaching PostgreSQL
-                # This is a defensive guard; the term filter above is the primary fix
-                if results_at is None:
+                # Skip windows with no results_at when we have schedule data for the
+                # term but this specific window is missing — prevents NaT from
+                # reaching PostgreSQL. If no schedules are loaded at all, create
+                # the window anyway (timeline dates will be NULL).
+                dash_term = acad_term_id_to_dash_format(acad_term_id)
+                has_schedules_for_term = bool(self._bidding_schedules.get(dash_term, []))
+                if results_at is None and has_schedules_for_term:
                     self._logger.warning(
                         f"Skipping bid window {acad_term_id} Round {round_str} Window {window_num} "
                         f"— no results_at (missing from bidding_schedules.json)"
@@ -234,5 +251,5 @@ class BidWindowProcessor(AbstractProcessor):
                 )
                 next_bid_window_id += 1
 
-        self._logger.info(f"Created {len(results_new)} bid windows")
-        return results_new, []  # Always empty updated list (bid_window only does CREATE)
+        self._logger.info(f"Created {len(results_new)} bid windows, updated {len(results_updated)}")
+        return results_new, results_updated

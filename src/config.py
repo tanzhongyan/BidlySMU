@@ -61,14 +61,20 @@ def _load_bidding_schedules() -> Dict[str, List[Tuple[datetime, str, str, dateti
             raw_schedules = json.load(f)
 
         # Convert JSON format to Python format with datetime objects
-        # Entries always have 5 elements: [results_at, title, abbrev, opens_at, closes_at]
+        # Entries may have 3 or 5 elements:
+        #   Legacy:   [results_at, title, abbrev]
+        #   Extended: [results_at, title, abbrev, opens_at, closes_at]
         schedules = {}
         for term, entries in raw_schedules.items():
-            schedules[term] = [
-                (datetime.fromisoformat(entry[0]), entry[1], entry[2],
-                 datetime.fromisoformat(entry[3]), datetime.fromisoformat(entry[4]))
-                for entry in entries
-            ]
+            parsed = []
+            for entry in entries:
+                results_at = datetime.fromisoformat(entry[0])
+                title = entry[1]
+                abbrev = entry[2]
+                opens_at = datetime.fromisoformat(entry[3]) if len(entry) >= 5 and entry[3] else None
+                closes_at = datetime.fromisoformat(entry[4]) if len(entry) >= 5 and entry[4] else None
+                parsed.append((results_at, title, abbrev, opens_at, closes_at))
+            schedules[term] = parsed
         return schedules
     except FileNotFoundError:
         print(f"Warning: BIDDING_SCHEDULES_PATH '{schedules_path}' not found. Using empty schedules.")

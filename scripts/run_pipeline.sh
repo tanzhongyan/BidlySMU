@@ -366,7 +366,7 @@ if raw_data.exists():
 # Upload bidding_schedules.json
 schedules_file = Path('script_input/bidding_schedules.json')
 if schedules_file.exists():
-    remote_path = 'input/bidding_schedules.json'
+    remote_path = 'schedules/bidding_schedules.json'
     try:
         supabase.storage.from_(bucket).upload(
             remote_path,

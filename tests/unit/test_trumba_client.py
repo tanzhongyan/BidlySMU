@@ -87,13 +87,13 @@ class TestBossEvent:
         """BossEvent should store all fields correctly."""
         event = BossEvent(
             term="2026-27_T1",
-            datetime="2026-07-08T14:00:00",
+            start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
             is_results=True
         )
         assert event.term == "2026-27_T1"
-        assert event.datetime == "2026-07-08T14:00:00"
+        assert event.start_dt == "2026-07-08T14:00:00"
         assert event.abbrev == "R1W1"
         assert event.title == "BOSS Round 1 Window 1"
         assert event.is_results is True
@@ -102,7 +102,7 @@ class TestBossEvent:
         """to_dict should return correct dictionary representation."""
         event = BossEvent(
             term="2026-27_T1",
-            datetime="2026-07-08T14:00:00",
+            start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
             is_results=True
@@ -110,17 +110,18 @@ class TestBossEvent:
         result = event.to_dict()
         assert result == {
             "term": "2026-27_T1",
-            "datetime": "2026-07-08T14:00:00",
+            "start_dt": "2026-07-08T14:00:00",
             "abbrev": "R1W1",
             "title": "BOSS Round 1 Window 1",
-            "is_results": True
+            "is_results": True,
+            "end_dt": None,
         }
 
     def test_boss_event_is_frozen(self):
         """BossEvent should be immutable (frozen dataclass)."""
         event = BossEvent(
             term="2026-27_T1",
-            datetime="2026-07-08T14:00:00",
+            start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
             is_results=True
@@ -212,8 +213,8 @@ class TestTrubaClientFetchBossEvents:
         assert len(result) == 1
         assert result[0].title == "BOSS Round 1 Window 1"
 
-    def test_fetch_boss_events_filters_window_events(self, truba_config, mock_requests):
-        """Should only return Results events, not Window events."""
+    def test_fetch_boss_events_includes_both_window_and_results(self, truba_config, mock_requests):
+        """Should return both Window and Results BOSS events."""
         mock_requests["response"].json.return_value = [
             {"title": "BOSS Round 1 Window 1", "startDateTime": "2026-07-06T10:00:00Z"},
             {"title": "BOSS Round 1 Window 1 Results", "startDateTime": "2026-07-08T14:00:00Z"},
@@ -222,9 +223,9 @@ class TestTrubaClientFetchBossEvents:
         client = TrubaClient(truba_config)
         result = client.fetch_boss_events()
 
-        assert len(result) == 1
-        assert result[0].is_results is True
-        assert result[0].title == "BOSS Round 1 Window 1"
+        assert len(result) == 2
+        assert result[0].is_results is False  # Window event
+        assert result[1].is_results is True   # Results event
 
     def test_fetch_boss_events_extracts_term(self, truba_config, mock_requests):
         """Should extract term from customFields."""
@@ -458,8 +459,8 @@ class TestBiddingScheduleManager:
 
         existing = {}
         new_events = [
-            BossEvent(term="2026-27_T1", datetime="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
-            BossEvent(term="2026-27_T1", datetime="2026-07-10T14:00:00", abbrev="R1AW1", title="Round 1A Window 1", is_results=True),
+            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="2026-27_T1", start_dt="2026-07-10T14:00:00", abbrev="R1AW1", title="Round 1A Window 1", is_results=True),
         ]
 
         result = manager.merge_with_deduplication(existing, new_events)
@@ -473,8 +474,8 @@ class TestBiddingScheduleManager:
         manager = lambda_module.BiddingScheduleManager(mock_supabase_client)
 
         new_events = [
-            BossEvent(term="2026-27_T1", datetime="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
-            BossEvent(term="2026-27_T1", datetime="2026-07-15T14:00:00", abbrev="R1BW1", title="Round 1B Window 1", is_results=True),
+            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="2026-27_T1", start_dt="2026-07-15T14:00:00", abbrev="R1BW1", title="Round 1B Window 1", is_results=True),
         ]
 
         result = manager.merge_with_deduplication(sample_bidding_schedules.copy(), new_events)
@@ -488,7 +489,7 @@ class TestBiddingScheduleManager:
 
         existing = {"2026-27_T1": [["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"]]}
         new_events = [
-            BossEvent(term="2026-27_T1", datetime="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
         ]
 
         result = manager.merge_with_deduplication(existing, new_events)

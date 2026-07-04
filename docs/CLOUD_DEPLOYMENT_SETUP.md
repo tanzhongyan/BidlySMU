@@ -179,14 +179,14 @@ python --version
    ```
    bidlysmu-files/
    ├── input/
-   │   ├── bidding_schedules.json    # REQUIRED - upload from script_input/
    │   └── raw_data.xlsx             # REQUIRED - shared file across all terms (upload from script_input/)
    └── schedules/
-       └── existing_schedules.json    # Auto-created by Lambda (do not upload)
+       ├── bidding_schedules.json    # REQUIRED - upload from script_input/ (updated by Lambda)
+       └── existing_schedules.json   # Auto-created by Lambda (do not upload)
    ```
 
 3. Upload files:
-   - `script_input/bidding_schedules.json` → `input/bidding_schedules.json`
+   - `script_input/bidding_schedules.json` → `schedules/bidding_schedules.json`
    - `script_input/raw_data.xlsx` → `input/raw_data.xlsx`
 
 #### Complete Storage Structure
@@ -196,7 +196,6 @@ After the pipeline runs, the full structure will be:
 ```
 bidlysmu-files/
 ├── input/
-│   ├── bidding_schedules.json       # BOSS event windows (uploaded manually, updated by Lambda)
 │   ├── raw_data.xlsx                # Shared class data across all terms (uploaded manually, updated by scraper)
 │   └── overallBossResults/          # Temporary bid results (auto-created by scraper)
 │       └── {term}.xlsx              # e.g., 2025-26_T3B.xlsx
@@ -208,6 +207,7 @@ bidlysmu-files/
 │       ├── bid_predictions.csv
 │       └── ... (other CSV outputs)
 └── schedules/
+    ├── bidding_schedules.json       # BOSS event windows (uploaded manually, updated by Lambda)
     └── existing_schedules.json      # Tracks created EventBridge schedules (auto-created by Lambda)
 ```
 

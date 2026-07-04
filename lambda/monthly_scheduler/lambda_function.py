@@ -174,6 +174,80 @@ class ScheduleTracker:
 
 
 # =============================================================================
+# EventBridge Scheduler — wraps boto3 EventBridge Scheduler client
+# =============================================================================
+
+class EventBridgeScheduler:
+    """Wraps the boto3 EventBridge Scheduler client for creating one-time schedules.
+
+    Each schedule invokes this Lambda in Mode 2 (run_pipeline) at the computed
+    scrape time for a specific term/window pair.
+    """
+
+    def __init__(self, region, cluster_arn, task_def_arn,
+                 scheduler_role_arn, subnets, security_groups,
+                 lambda_arn=None):
+        self._region = region
+        self._cluster_arn = cluster_arn
+        self._task_def_arn = task_def_arn
+        self._scheduler_role_arn = scheduler_role_arn
+        self._subnets = subnets
+        self._security_groups = security_groups
+        self._lambda_arn = lambda_arn
+        self._scheduler = boto3.client("scheduler", region_name=region)
+
+    def schedule_exists(self, name):
+        """Check whether an EventBridge schedule already exists."""
+        try:
+            self._scheduler.get_schedule(Name=name)
+            return True
+        except self._scheduler.exceptions.ResourceNotFoundException:
+            return False
+
+    def create_schedule(self, schedule_name, scrape_time, term, abbrev,
+                        results_datetime):
+        """Create a one-time EventBridge schedule that triggers a pipeline run."""
+        self._scheduler.create_schedule(
+            Name=schedule_name,
+            ScheduleExpression=f"at({scrape_time.strftime('%Y-%m-%dT%H:%M:%S')})",
+            FlexibleTimeWindow={"Mode": "OFF"},
+            Target={
+                "Arn": self._lambda_arn or "",
+                "RoleArn": self._scheduler_role_arn,
+                "Input": json.dumps({
+                    "trigger": "run_pipeline",
+                    "acad_term_id": dash_format_to_acad_term_id(term),
+                    "window": abbrev,
+                    "results_datetime": results_datetime,
+                }),
+            },
+            ActionAfterCompletion="DELETE",
+        )
+
+
+# =============================================================================
+# Term conversion helper (re-exported for test visibility)
+# =============================================================================
+
+def convert_term_to_acad_term_id(term: str) -> str:
+    """Convert Trumba dash format (e.g. '2026-27_T1') to BOSS ACAD_TERM_ID (e.g. 'AY202627T1').
+
+    Handles three cases:
+    - Already in AY format (e.g. 'AY202627T1') → returned as-is
+    - Dash format (e.g. '2026-27_T1') → converted via canonical implementation
+    - Unknown format → returned as-is
+    """
+    # Already in AY format: return as-is
+    if re.match(r'^AY\d{6}T', term):
+        return term
+    # Dash format: delegate to canonical conversion
+    if re.match(r'^\d{4}-\d{2}_T', term):
+        return dash_format_to_acad_term_id(term)
+    # Unknown format: return as-is
+    return term
+
+
+# =============================================================================
 # Dual-mode Lambda handler
 # =============================================================================
 
@@ -260,7 +334,15 @@ def lambda_handler(event, context):
                       else os.environ.get("AWS_LAMBDA_FUNCTION_ARN", ""))
 
         if LAMBDA_INVOKE_ROLE_ARN:
-            sched = boto3.client("scheduler", region_name=AWS_REGION)
+            sched = EventBridgeScheduler(
+                region=AWS_REGION,
+                cluster_arn=ECS_CLUSTER_ARN,
+                task_def_arn=ECS_TASK_DEF_ARN,
+                scheduler_role_arn=LAMBDA_INVOKE_ROLE_ARN,
+                subnets=SUBNETS,
+                security_groups=SECURITY_GROUPS,
+                lambda_arn=lambda_arn,
+            )
             tracker = ScheduleTracker(supabase)
             tracking = tracker.download_tracking_file()
 
@@ -271,32 +353,19 @@ def lambda_handler(event, context):
 
                     if tracker.is_tracked(tracking, term, name):
                         continue
-                    try:
-                        sched.get_schedule(Name=name)
+                    if sched.schedule_exists(name):
                         continue
-                    except sched.exceptions.ResourceNotFoundException:
-                        pass
 
                     scrape_time = calculate_scrape_time(windows, i)
                     if scrape_time < datetime.now():
                         continue
 
-                    acad_term_id = dash_format_to_acad_term_id(term)
                     sched.create_schedule(
-                        Name=name,
-                        ScheduleExpression=f"at({scrape_time.strftime('%Y-%m-%dT%H:%M:%S')})",
-                        FlexibleTimeWindow={"Mode": "OFF"},
-                        Target={
-                            "Arn": lambda_arn,
-                            "RoleArn": LAMBDA_INVOKE_ROLE_ARN,
-                            "Input": json.dumps({
-                                "trigger": "run_pipeline",
-                                "acad_term_id": acad_term_id,
-                                "window": abbrev,
-                                "results_datetime": window[0]
-                            })
-                        },
-                        ActionAfterCompletion="DELETE"
+                        schedule_name=name,
+                        scrape_time=scrape_time,
+                        term=term,
+                        abbrev=abbrev,
+                        results_datetime=window[0],
                     )
                     tracking = tracker.add_to_tracking(tracking, term, name, scrape_time, window[0])
                     schedules_created.append(name)

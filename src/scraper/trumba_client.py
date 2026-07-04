@@ -56,6 +56,15 @@ class BossEvent:
             "end_dt": self.end_dt,
         }
 
+    def to_schedule_entry(self) -> list:
+        """Convert to legacy schedule entry format for backward compatibility.
+
+        Uses start_dt as results_at for results events.
+        Extended format: [results_at, title, abbrev, opens_at, closes_at]
+        opens_at/closes_at are None for raw BossEvent (only BossWindow has them).
+        """
+        return [self.start_dt, self.title, self.abbrev, None, None]
+
 
 @dataclass(frozen=True)
 class BossWindow:
