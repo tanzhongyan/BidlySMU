@@ -152,7 +152,7 @@ jobs:
               runtimePlatform: runtimePlatform,
               containerDefinitions: containerDefinitions
             }' \
-            | jq '.containerDefinitions[0].image = "${{ secrets.PIPELINE_ECR_URL }}:${{ needs.build-pipeline.outputs.image_tag }}"' \
+            | jq 'del(.runtimePlatform | select(. == null)) | .containerDefinitions[0].image = "${{ secrets.PIPELINE_ECR_URL }}:${{ needs.build-pipeline.outputs.image_tag }}"' \
             > /tmp/task-def.json
 
           aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
