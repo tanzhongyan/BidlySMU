@@ -59,7 +59,7 @@ monthly_schedule_cron = "cron(0 0 1 * ? *)"
 # Database credentials
 ssm_db_host     = "aws-1-ap-southeast-2.pooler.supabase.com"
 ssm_db_name     = "postgres"
-ssm_db_user     = "postgres.nccnkwmlcbesjcxzrjks"
+ssm_db_user     = "postgres.username"
 ssm_db_password = "your-db-password-here"
 ssm_db_port     = "5432"
 
@@ -70,12 +70,12 @@ ssm_boss_mfa_secret = "your-mfa-secret"
 
 # API keys
 ssm_gemini_api_key       = "your-gemini-api-key"
-ssm_supabase_url         = "https://nccnkwmlcbesjcxzrjks.supabase.co"
+ssm_supabase_url         = "https://username.supabase.co"
 ssm_supabase_service_key = "your-supabase-service-key"
 ssm_sentry_dsn           = "https://your-sentry-dsn@sentry.io/your-project"
 
 # =============================================================================
 # SUPABASE (for Lambda environment variables)
 # =============================================================================
-supabase_url         = "https://nccnkwmlcbesjcxzrjks.supabase.co"
+supabase_url         = "https://username.supabase.co"
 supabase_service_key = "your-supabase-service-key"
