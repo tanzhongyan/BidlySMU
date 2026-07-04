@@ -51,6 +51,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          provenance: false
           tags: |
             ${{ secrets.PIPELINE_ECR_URL }}:${{ steps.meta.outputs.version }}
             ${{ secrets.PIPELINE_ECR_URL }}:latest
@@ -92,6 +93,7 @@ jobs:
           context: .
           file: ./lambda/monthly_scheduler/Dockerfile
           push: true
+          provenance: false
           tags: |
             ${{ secrets.SCHEDULER_ECR_URL }}:${{ steps.meta.outputs.version }}
             ${{ secrets.SCHEDULER_ECR_URL }}:latest
