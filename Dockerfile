@@ -57,13 +57,18 @@ COPY models/ ./models/
 # Create required directories
 RUN mkdir -p script_input script_output logs db_cache
 
+# Copy static data files (canonical source: data/)
+COPY data/ ./data/
+
 # Copy static input files needed at runtime
 COPY script_input/classification_validation_results.csv \
      script_input/regression_median_validation_results.csv \
      script_input/regression_min_validation_results.csv \
-     script_input/professor_lookup.csv \
      script_input/bidding_schedules.json \
      script_input/
+
+# Copy professor_lookup.csv to script_input/ (Transformer reads it from there)
+RUN cp data/professor_lookup.csv script_input/professor_lookup.csv
 
 # Environment variables
 ENV PYTHONUTF8=1
