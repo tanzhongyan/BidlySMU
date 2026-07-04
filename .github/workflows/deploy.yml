@@ -14,8 +14,6 @@ on:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-  PIPELINE_IMAGE: bidlysmu-pipeline
-  SCHEDULER_IMAGE: bidlysmu-scheduler
 
 jobs:
   # ===========================================================================
@@ -112,7 +110,7 @@ jobs:
       - name: Update Lambda function code
         run: |
           aws lambda update-function-code \
-            --function-name bidlysmu-scheduler \
+            --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
             --image-uri ${{ secrets.SCHEDULER_ECR_URL }}:${{ needs.build-scheduler.outputs.image_tag }}
 
   # ===========================================================================
@@ -134,7 +132,7 @@ jobs:
         run: |
           # Fetch current task definition and update just the image tag
           aws ecs describe-task-definition \
-            --task-definition bidlysmu-pipeline-task \
+            --task-definition ${{ secrets.ECS_TASK_DEFINITION_NAME }} \
             --query 'taskDefinition | {
               family: family,
               taskRoleArn: taskRoleArn,
