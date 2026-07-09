@@ -1,6 +1,7 @@
 """
 SafetyFactorProcessor - generates safety factors for bid predictions.
-Refactored to pure function pattern with explicit parameters.
+Safety factors are generated once per semester — if they already exist
+in the database for the current term, generation is skipped.
 """
 from typing import List, Optional
 import os
@@ -12,18 +13,25 @@ from src.pipeline.safety_factor_calculator import SafetyFactorCalculator
 
 
 class SafetyFactorProcessor:
-    """Generates safety factor multipliers from model validation results."""
+    """Generates safety factor multipliers from model validation results.
+
+    Safety factors are idempotent per academic term. Once generated,
+    they should not be re-inserted. The processor checks the database
+    first (if db_connection is provided), falling back to a local cache file.
+    """
 
     def __init__(
         self,
         expected_acad_term_id: str,
         cache_dir: str = 'db_cache',
-        logger: Optional[object] = None
+        logger: Optional[object] = None,
+        db_connection=None,
     ):
         # expected_acad_term_id should already be ACAD_TERM_ID (BOSS format)
         self._expected_acad_term_id = expected_acad_term_id
         self._cache_dir = cache_dir
         self._logger = logger
+        self._db_connection = db_connection
 
     def process(self) -> List['SafetyFactorDTO']:
         """Execute safety factor processing. Returns list of SafetyFactorDTOs."""
@@ -54,7 +62,7 @@ class SafetyFactorProcessor:
 
         self._logger.info(f"Generated {len(safety_factors)} safety factor entries")
 
-        # Create cache file to mark safety factors as generated
+        # Mark as generated (cache file + DB insert will persist)
         self._mark_as_generated()
 
         return safety_factors
@@ -65,7 +73,31 @@ class SafetyFactorProcessor:
         Path(safety_factor_path).touch()
 
     def _already_exists(self) -> bool:
-        """Check if safety factors cache file exists."""
+        """Check if safety factors already exist for this term.
+
+        Checks the database first (persistent across ECS runs), then
+        falls back to the local cache file (faster, works without DB).
+        """
+        # Primary check: query the database (survives ECS container restarts)
+        if self._db_connection is not None:
+            try:
+                import pandas as pd
+                count = pd.read_sql_query(
+                    'SELECT COUNT(*) FROM safety_factor WHERE acad_term_id = %s',
+                    self._db_connection,
+                    params=(self._expected_acad_term_id,),
+                ).iloc[0, 0]
+                if count > 0:
+                    if self._logger:
+                        self._logger.info(
+                            f"Found {count} existing safety factors in DB for {self._expected_acad_term_id}"
+                        )
+                    return True
+            except Exception as e:
+                if self._logger:
+                    self._logger.warning(f"DB check for safety factors failed: {e}")
+
+        # Fallback: check local cache file
         safety_factor_path = os.path.join(self._cache_dir, 'safety_factors_cache.pkl')
         return os.path.exists(safety_factor_path)
 

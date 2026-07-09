@@ -76,7 +76,8 @@ class ScraperCoordinator:
                 driver.get("https://boss.intranet.smu.edu.sg/")
 
                 self._logger.info("Performing login...")
-                self._authenticator.login(driver)
+                driver = self._authenticator.login(driver)
+                self._scraper.connect(driver)
                 self._logger.info("Login successful")
 
             # Run scraping

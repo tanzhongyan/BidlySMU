@@ -299,7 +299,17 @@ _config_cache: Dict[str, object] = {}
 
 def _compute_and_cache_window_names() -> None:
     """Compute CURRENT_WINDOW_NAME and PREVIOUS_WINDOW_NAME lazily on first access."""
-    
+
+    def _clean_window_name(entry):
+        """Extract clean window name from schedule entry (e.g. 'Round 1A Window 1').
+
+        Uses the abbrev field to produce consistent formatting without BOSS prefix.
+        Falls back to raw entry[1] for legacy entries that lack an abbrev.
+        """
+        if len(entry) >= 3 and entry[2]:
+            return abbrev_window_to_full(entry[2])
+        return entry[1]  # legacy fallback
+
     target_current = os.getenv('TARGET_CURRENT_WINDOW')
     target_previous = os.getenv('TARGET_PREVIOUS_WINDOW')
     
@@ -308,9 +318,22 @@ def _compute_and_cache_window_names() -> None:
             if val is None: return None
             if val.lower() == 'none' or val.strip() == '': return None
             return val
-            
-        _config_cache['CURRENT_WINDOW_NAME'] = _parse_target(target_current)
-        _config_cache['PREVIOUS_WINDOW_NAME'] = _parse_target(target_previous)
+
+        current = _parse_target(target_current)
+        previous = _parse_target(target_previous)
+
+        # Fallback: if CURRENT was provided but PREVIOUS wasn't (old schedules
+        # that predate the Lambda passing TARGET_PREVIOUS_WINDOW), derive
+        # PREVIOUS from bidding_schedules.json by finding the entry before CURRENT.
+        if current is not None and previous is None:
+            schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
+            for i, entry in enumerate(schedule):
+                if _clean_window_name(entry) == current and i > 0:
+                    previous = _clean_window_name(schedule[i - 1])
+                    break
+
+        _config_cache['CURRENT_WINDOW_NAME'] = current
+        _config_cache['PREVIOUS_WINDOW_NAME'] = previous
         return
 
     schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
@@ -319,16 +342,16 @@ def _compute_and_cache_window_names() -> None:
     current_window_name = None
     previous_window_name = None
 
-    for i, (results_date, window_name, *rest) in enumerate(schedule):
-        if now < results_date:
-            current_window_name = window_name
+    for i, entry in enumerate(schedule):
+        if now < entry[0]:
+            current_window_name = _clean_window_name(entry)
             if i > 0:
-                previous_window_name = schedule[i - 1][1]
+                previous_window_name = _clean_window_name(schedule[i - 1])
             break
 
     if current_window_name is None and schedule:
         current_window_name = None
-        previous_window_name = schedule[-1][1]
+        previous_window_name = _clean_window_name(schedule[-1])
 
     _config_cache['CURRENT_WINDOW_NAME'] = current_window_name
     _config_cache['PREVIOUS_WINDOW_NAME'] = previous_window_name
@@ -415,11 +438,11 @@ class _BiddingWindowFormat:
 
 _FORMATS: List[_BiddingWindowFormat] = [
     _BiddingWindowFormat(
-        r'Incoming\s+Freshmen\s+Rnd\s+(\w+)\s+Win\s+(\d+)',
+        r'Incoming\s+Freshmen\s+(?:Rnd|Round)\s+(\w+)\s+(?:Win|Window)\s+(\d+)',
         lambda m: ("1F" if m.group(1) == "1" else f"{m.group(1)}F", int(m.group(2))),
     ),
     _BiddingWindowFormat(
-        r'Incoming\s+Exchange\s+Rnd\s+(\w+)\s+Win\s+(\d+)',
+        r'Incoming\s+Exchange\s+(?:Rnd|Round)\s+(\w+)\s+(?:Win|Window)\s+(\d+)',
         lambda m: (m.group(1), int(m.group(2))),
     ),
     _BiddingWindowFormat(

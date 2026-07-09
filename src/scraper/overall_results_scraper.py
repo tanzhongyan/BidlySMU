@@ -128,7 +128,8 @@ class OverallResultsScraper(AbstractScraper):
             self._driver.get("https://boss.intranet.smu.edu.sg/")
 
             if authenticator:
-                authenticator.login(self._driver)
+                self._driver = authenticator.login(self._driver)
+                self.connect(self._driver)
 
             # Scrape data
             data = self._scrape_term_data(
@@ -657,7 +658,7 @@ class OverallResultsScraper(AbstractScraper):
         # Convert display format to dash format: '2025-26 Term 3A' -> '2025-26_T3A'
         match = re.match(r'(\d{4})-(\d{2})\s+Term\s+([A-Z0-9]+)', term)
         if match:
-            return f"{match.group(1)}-{match.group(2)}_{match.group(3)}.xlsx"
+            return f"{match.group(1)}-{match.group(2)}_T{match.group(3)}.xlsx"
         return term + '.xlsx'
 
     def _save_to_excel(self, data: List[dict], term: str, output_dir: str) -> None:

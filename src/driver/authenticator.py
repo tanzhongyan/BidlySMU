@@ -21,7 +21,7 @@ Usage:
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 import os
 import time
 import logging
@@ -96,15 +96,19 @@ class Authenticator(ABC):
     """
 
     @abstractmethod
-    def login(self, driver: WebDriver) -> str:
+    def login(self, driver: WebDriver) -> WebDriver:
         """
-        Perform login and return username.
+        Perform login and return the WebDriver.
+
+        The returned driver may differ from the input driver if the login
+        process creates a fresh session (e.g. on retry). Callers MUST
+        use the returned driver for subsequent operations.
 
         Args:
             driver: Pre-configured WebDriver at BOSS login page
 
         Returns:
-            str: Username of logged-in user
+            WebDriver: The driver to use after login (may be new)
 
         Raises:
             Exception: If login fails
@@ -129,7 +133,7 @@ class ManualLogin(Authenticator):
         self._timeout = timeout
         self._logger = logger or get_logger(__name__)
 
-    def login(self, driver: WebDriver) -> str:
+    def login(self, driver: WebDriver) -> WebDriver:
         """
         Wait for user to manually log in and complete Microsoft Authenticator process.
 
@@ -137,7 +141,7 @@ class ManualLogin(Authenticator):
             driver: WebDriver at BOSS login page
 
         Returns:
-            str: Username of logged-in user
+            WebDriver: The driver (unchanged for manual login)
 
         Raises:
             Exception: If login fails or times out
@@ -161,7 +165,7 @@ class ManualLogin(Authenticator):
             raise Exception("Login failed or timed out. Could not detect login elements.")
 
         time.sleep(2)
-        return username
+        return driver
 
 
 class AutomatedLogin(Authenticator):
@@ -179,14 +183,40 @@ class AutomatedLogin(Authenticator):
         credentials: AuthCredentials,
         timeout: int = 60,
         logger: Optional[logging.Logger] = None,
+        driver_factory: Optional[Callable[[], WebDriver]] = None,
     ):
         self._credentials = credentials
         self._timeout = timeout
         self._logger = logger or get_logger(__name__)
+        self._driver_factory = driver_factory
 
-    def login(self, driver: WebDriver) -> str:
+    def _capture_failure_context(self, driver: WebDriver, label: str) -> None:
+        """Capture screenshot + URL and log as ERROR for Sentry visibility."""
+        try:
+            current_url = driver.current_url
+            timestamp = int(time.time())
+
+            # Save screenshot to /tmp/login_debug/ as fallback
+            try:
+                import os as _os
+                _os.makedirs("/tmp/login_debug", exist_ok=True)
+                path = f"/tmp/login_debug/failure_{label}_{timestamp}.png"
+                driver.save_screenshot(path)
+                self._logger.warning(f"Screenshot saved: {path}")
+            except Exception:
+                pass
+
+            # Sentry picks up ERROR-level logs automatically
+            self._logger.error(
+                f"Login failure [{label}] at URL: {current_url[:300]} "
+                f"(timestamp: {timestamp})"
+            )
+        except Exception as screenshot_err:
+            self._logger.warning(f"Could not capture failure context: {screenshot_err}")
+
+    def _do_login(self, driver: WebDriver) -> str:
         """
-        Perform automated TOTP-based login to BOSS.
+        Execute the full 8-step Microsoft Entra ID login flow.
 
         Args:
             driver: WebDriver instance
@@ -195,22 +225,12 @@ class AutomatedLogin(Authenticator):
             str: Username of logged-in user
 
         Raises:
-            ValueError: If credentials are invalid
             Exception: If login fails at any step
         """
         creds = self._credentials
         self._logger.info("Starting automated login process...")
 
         wait = WebDriverWait(driver, self._timeout)
-
-        def _save_debug_screenshot(label: str):
-            """Save a screenshot for debugging login failures."""
-            try:
-                path = f"/tmp/login_failure_{label}_{int(time.time())}.png"
-                driver.save_screenshot(path)
-                self._logger.error(f"Screenshot saved: {path}, URL: {driver.current_url}")
-            except Exception:
-                pass
 
         try:
             # Step 1: Navigate to BOSS (redirects to Microsoft login)
@@ -222,7 +242,7 @@ class AutomatedLogin(Authenticator):
             try:
                 wait.until(EC.presence_of_element_located((By.ID, "i0116")))
             except TimeoutException:
-                _save_debug_screenshot("ms_login")
+                self._capture_failure_context(driver, "ms_login")
                 raise Exception("Step 2 failed: Microsoft login page (i0116) did not load. URL: " + driver.current_url)
             time.sleep(1.5)
 
@@ -236,7 +256,6 @@ class AutomatedLogin(Authenticator):
             driver.find_element(By.ID, "idSIButton9").click()
 
             # Step 3: Enter password on SMU ADFS page
-            # Try multiple possible selectors for the password field (SMU may change the page)
             self._logger.info("Waiting for SMU ADFS login page...")
             password_input = None
             password_selectors = [
@@ -256,7 +275,7 @@ class AutomatedLogin(Authenticator):
                     continue
 
             if password_input is None:
-                _save_debug_screenshot("adfs_password")
+                self._capture_failure_context(driver, "adfs_password")
                 raise Exception(
                     f"Step 3 failed: SMU ADFS password field not found. "
                     f"Tried: {[s[1] for s in password_selectors]}. URL: {driver.current_url}"
@@ -285,7 +304,7 @@ class AutomatedLogin(Authenticator):
                     continue
 
             if submit_button is None:
-                _save_debug_screenshot("adfs_submit")
+                self._capture_failure_context(driver, "adfs_submit")
                 raise Exception(
                     f"Step 3 failed: Submit button not found. "
                     f"Tried: {[s[1] for s in submit_selectors]}. URL: {driver.current_url}"
@@ -345,7 +364,7 @@ class AutomatedLogin(Authenticator):
                     continue
 
             if otp_input is None:
-                _save_debug_screenshot("otp_missing")
+                self._capture_failure_context(driver, "otp_missing")
                 raise Exception(
                     f"Step 6 failed: OTP input field not found. "
                     f"Tried: {[s[1] for s in otp_selectors]}. URL: {driver.current_url}"
@@ -353,7 +372,7 @@ class AutomatedLogin(Authenticator):
             otp_input.clear()
             otp_input.send_keys(code)
 
-            # Step 7: Click Verify/Submit button
+            # Step 7: Click Verify/Submit button (wait for clickable to avoid ElementNotInteractableException)
             self._logger.info("Clicking Verify button...")
             verify_button = None
             verify_selectors = [
@@ -363,33 +382,46 @@ class AutomatedLogin(Authenticator):
             ]
             for by, selector in verify_selectors:
                 try:
-                    verify_button = driver.find_element(by, selector)
+                    verify_button = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((by, selector))
+                    )
                     self._logger.info(f"Found verify button: {by}={selector}")
                     break
-                except Exception:
+                except TimeoutException:
                     continue
 
             if verify_button is None:
-                _save_debug_screenshot("verify_missing")
+                self._capture_failure_context(driver, "verify_missing")
                 raise Exception(
-                    f"Step 7 failed: Verify button not found. "
+                    f"Step 7 failed: Verify button not found or not clickable. "
                     f"Tried: {[s[1] for s in verify_selectors]}. URL: {driver.current_url}"
                 )
             verify_button.click()
-            self._logger.info("Verify clicked. Waiting for session cookies...")
-            time.sleep(5)
+            self._logger.info("Verify clicked. Waiting for form_post redirect...")
 
-            # Step 8: Navigate directly to BOSS (session is already authenticated)
-            # The Microsoft OAuth form_post redirect may fail in Selenium,
-            # but the session cookies are set after successful MFA.
-            self._logger.info("Navigating directly to BOSS dashboard...")
-            driver.get("https://boss.intranet.smu.edu.sg/")
-            time.sleep(5)
-            self._logger.info(f"After direct navigation: {driver.current_url[:120]}")
+            # Step 8: Wait for the OAuth form_post to redirect us to BOSS.
+            # With anti-detection flags, the redirect should complete naturally.
+            # If it doesn't within 10s, navigate directly as fallback.
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: "login.microsoftonline.com" not in d.current_url
+                )
+                self._logger.info(
+                    f"form_post redirect completed: {driver.current_url[:120]}"
+                )
+            except TimeoutException:
+                self._logger.warning(
+                    "form_post redirect did not complete, "
+                    "navigating directly as fallback..."
+                )
+                driver.get("https://boss.intranet.smu.edu.sg/")
+                time.sleep(5)
 
-            # If redirected back to Microsoft, the session didn't stick
+            self._logger.info(f"Current URL: {driver.current_url[:120]}")
+
+            # If still on Microsoft after everything, session failed
             if "login.microsoftonline.com" in driver.current_url:
-                _save_debug_screenshot("boss_rejected")
+                self._capture_failure_context(driver, "boss_rejected")
                 raise Exception(
                     f"BOSS rejected direct navigation — session not authenticated. "
                     f"URL: {driver.current_url[:120]}"
@@ -401,7 +433,7 @@ class AutomatedLogin(Authenticator):
                     EC.presence_of_element_located((By.ID, "Label_UserName"))
                 )
             except TimeoutException:
-                _save_debug_screenshot("boss_dashboard")
+                self._capture_failure_context(driver, "boss_dashboard")
                 raise Exception(
                     f"BOSS dashboard did not load. URL: {driver.current_url[:120]}"
                 )
@@ -413,7 +445,7 @@ class AutomatedLogin(Authenticator):
             return username
 
         except TimeoutException as e:
-            _save_debug_screenshot("timeout")
+            self._capture_failure_context(driver, "timeout")
             error_msg = (
                 f"Login timed out. Element: {str(e)[:200]}. URL: {driver.current_url}"
             )
@@ -425,3 +457,77 @@ class AutomatedLogin(Authenticator):
             error_msg = f"Automated login failed: {str(e)}"
             self._logger.error(error_msg)
             raise
+
+    def login(self, driver: WebDriver) -> WebDriver:
+        """
+        Perform automated TOTP-based login to BOSS with retry on failure.
+
+        Retries up to 3 times with exponential backoff (10s, 20s, 40s).
+        Each retry creates a fresh WebDriver session via driver_factory.
+        If driver_factory is not provided, falls back to single-attempt behavior.
+
+        IMPORTANT: Returns the WebDriver to use after login. The returned driver
+        may be a new instance if a retry occurred. Callers MUST use the returned
+        driver — the input driver may have been quit and replaced.
+
+        Args:
+            driver: WebDriver instance (replaced with fresh instance on retry)
+
+        Returns:
+            WebDriver: The driver to use after login (may be new)
+
+        Raises:
+            ValueError: If credentials are invalid
+            Exception: If login fails after all retry attempts
+        """
+        max_attempts = 3
+        backoff_seconds = [10, 20, 40]
+        last_exception = None
+        current_driver = driver
+
+        for attempt in range(max_attempts):
+            try:
+                self._do_login(current_driver)
+                return current_driver
+            except Exception as e:
+                last_exception = e
+                # First 2 attempts are expected to fail due to Entra ID redirect
+                # timing — log as WARNING to avoid Sentry noise. Only the final
+                # exhausted-retries failure is a genuine ERROR.
+                if attempt < max_attempts - 1:
+                    self._logger.warning(
+                        f"Login attempt {attempt + 1}/{max_attempts} failed: {e}"
+                    )
+                else:
+                    self._logger.error(
+                        f"Login attempt {attempt + 1}/{max_attempts} failed: {e}"
+                    )
+
+                # Quit the tainted driver before creating a fresh one
+                try:
+                    current_driver.quit()
+                except Exception:
+                    pass
+
+                # If we can retry with a fresh driver, do so
+                if attempt < max_attempts - 1:
+                    if self._driver_factory is None:
+                        self._logger.error(
+                            "No driver_factory available; cannot retry with fresh session. "
+                            "Provide driver_factory to AutomatedLogin to enable retries."
+                        )
+                        raise
+
+                    sleep_sec = backoff_seconds[attempt]
+                    self._logger.info(
+                        f"Waiting {sleep_sec}s before retry {attempt + 2}/{max_attempts}..."
+                    )
+                    time.sleep(sleep_sec)
+
+                    self._logger.info("Creating fresh WebDriver for retry...")
+                    current_driver = self._driver_factory()
+
+        raise Exception(
+            f"Login failed after {max_attempts} attempts. "
+            f"Last error: {last_exception}"
+        )

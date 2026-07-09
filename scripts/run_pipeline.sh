@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail
 
 # Force UTF-8 encoding for all Python processes
 export PYTHONUTF8=1
@@ -31,6 +32,7 @@ export PYTHONIOENCODING=utf-8
 # Consolidated logging to single logs/ directory at project root
 mkdir -p logs
 mkdir -p script_output
+rm -f script_output/_SUCCESS
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
@@ -91,7 +93,6 @@ try:
             logger.info(f'Downloaded: {remote_path}')
 except Exception as e:
     logger.info(f'overallBossResults not found (will be created by scraper): {e}')
-
 logger.info('Supabase Storage download completed')
 " 2>&1
 
@@ -179,12 +180,13 @@ logger.info('Starting class_scraper')
 config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
 driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
 credentials = AuthCredentials.from_environment()
-authenticator = AutomatedLogin(credentials)
+authenticator = AutomatedLogin(credentials, driver_factory=driver_factory.create)
 scraper = ClassScraper(config=config)
 driver = driver_factory.create()
 scraper.connect(driver)
 driver.get('https://boss.intranet.smu.edu.sg/')
-authenticator.login(driver)
+driver = authenticator.login(driver)
+scraper.connect(driver)
 logger.info(f'Scraping term={ACAD_TERM_ID}')
 result = scraper.scrape(acad_term_id=ACAD_TERM_ID)
 logger.info(f'Scraping completed: {result}')
@@ -237,12 +239,13 @@ logger.info('Starting overall_results_scraper')
 config = OverallResultsConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
 driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
 credentials = AuthCredentials.from_environment()
-authenticator = AutomatedLogin(credentials)
+authenticator = AutomatedLogin(credentials, driver_factory=driver_factory.create)
 scraper = OverallResultsScraper(config=config)
 driver = driver_factory.create()
 scraper.connect(driver)
 driver.get('https://boss.intranet.smu.edu.sg/')
-authenticator.login(driver)
+driver = authenticator.login(driver)
+scraper.connect(driver)
 logger.info(f'Scraping term={START_AY_TERM}')
 result = scraper.scrape(term=START_AY_TERM, bid_round=None, bid_window=None, output_dir='./script_input/overallBossResults', authenticator=None)
 logger.info(f'Scraping completed: {result}')
@@ -270,6 +273,96 @@ fi
 echo "✅ Step 1 (scraping) completed."
 echo "------------------------------------------------------------"
 
+# --- Step 1b: Upload raw scraped data to Supabase (BEFORE DB ingestion) ---
+# This ensures scraped HTML/raw data is preserved even if Step 2 crashes.
+if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
+    echo "[Step 1b] Uploading raw scraped data to Supabase Storage..."
+
+    python -c "
+import os
+import sys
+from pathlib import Path
+
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from supabase import create_client
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Supabase Storage upload of raw scraped data started')
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+bucket = 'bidlysmu-files'
+
+# Upload scraped HTML files (raw data — most important to preserve)
+html_dir = Path('script_input/classTimingsFull')
+if html_dir.exists():
+    for html_file in html_dir.rglob('*.html'):
+        remote_path = f'input/classTimingsFull/{html_file.relative_to(html_dir)}'
+        try:
+            supabase.storage.from_(bucket).upload(
+                str(remote_path),
+                html_file.read_bytes(),
+                {'content-type': 'text/html', 'upsert': 'true'}
+            )
+        except Exception as e:
+            logger.error(f'Failed to upload HTML {html_file.name}: {e}')
+    logger.info('Uploaded scraped HTML files')
+
+# Upload raw_data.xlsx (extracted from HTML)
+raw_data = Path('script_input/raw_data.xlsx')
+if raw_data.exists():
+    try:
+        supabase.storage.from_(bucket).upload(
+            'input/raw_data.xlsx',
+            raw_data.read_bytes(),
+            {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
+        )
+        logger.info('Uploaded: input/raw_data.xlsx')
+    except Exception as e:
+        logger.error(f'Failed to upload raw_data.xlsx: {e}')
+
+# Upload bidding_schedules.json
+schedules_file = Path('script_input/bidding_schedules.json')
+if schedules_file.exists():
+    try:
+        supabase.storage.from_(bucket).upload(
+            'schedules/bidding_schedules.json',
+            schedules_file.read_bytes(),
+            {'content-type': 'application/json', 'upsert': 'true'}
+        )
+        logger.info('Uploaded: schedules/bidding_schedules.json')
+    except Exception as e:
+        logger.error(f'Failed to upload bidding_schedules.json: {e}')
+
+# Upload overall results files
+overall_dir = Path('script_input/overallBossResults')
+if overall_dir.exists():
+    for xlsx_file in overall_dir.glob('*.xlsx'):
+        remote_path = f'input/overallBossResults/{xlsx_file.name}'
+        try:
+            supabase.storage.from_(bucket).upload(
+                remote_path,
+                xlsx_file.read_bytes(),
+                {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
+            )
+        except Exception as e:
+            logger.error(f'Failed to upload {xlsx_file.name}: {e}')
+    logger.info('Uploaded overall results files')
+
+logger.info('Supabase Storage upload of raw scraped data completed')
+" 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "⚠️ WARNING: Step 1b (Supabase upload of raw data) failed. Continuing with pipeline."
+    else
+        echo "✅ Step 1b (Supabase upload of raw data) completed."
+    fi
+    echo "------------------------------------------------------------"
+fi
 
 # --- Step 2: Table Building (Direct Coordinator Call) ---
 echo " Kicking off Step 2: PipelineCoordinator..."
@@ -290,13 +383,18 @@ coordinator = PipelineCoordinator(config=config)
 coordinator.run()
 " 2>&1 | tee -a "$STEP2_LOG"
 
-if [ $? -ne 0 ]; then
-    echo "❌ ERROR: PipelineCoordinator failed. Halting pipeline."
+EXIT_CODE=${PIPESTATUS[0]}
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "❌ ERROR: PipelineCoordinator failed with exit code $EXIT_CODE. Halting pipeline."
     echo "   - Check $STEP2_LOG for details."
     exit 1
 fi
 
 echo "✅ Step 2 completed successfully."
+
+# Write success marker for retry detection
+date -u +%Y-%m-%dT%H:%M:%SZ > script_output/_SUCCESS
+echo "✅ Success marker written to script_output/_SUCCESS"
 
 # --- Step 3: Upload results to Supabase Storage (if enabled) ---
 if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
@@ -349,65 +447,21 @@ for csv_file in output_dir.glob('*.csv'):
     except Exception as e:
         logger.error(f'Failed to upload {csv_file.name}: {e}')
 
-# Upload raw_data.xlsx (shared file, flat structure)
-raw_data = Path('script_input/raw_data.xlsx')
-if raw_data.exists():
-    remote_path = 'input/raw_data.xlsx'
+# Upload _SUCCESS marker for Lambda retry detection
+_success_file = Path('script_output/_SUCCESS')
+if _success_file.exists():
+    remote_success_path = f'{remote_dir}/_SUCCESS'
     try:
         supabase.storage.from_(bucket).upload(
-            remote_path,
-            raw_data.read_bytes(),
-            {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
+            remote_success_path,
+            _success_file.read_bytes(),
+            {'content-type': 'text/plain', 'upsert': 'true'}
         )
-        logger.info(f'Uploaded: {remote_path}')
+        logger.info(f'Uploaded: {remote_success_path}')
     except Exception as e:
-        logger.error(f'Failed to upload raw_data.xlsx: {e}')
+        logger.error(f'Failed to upload _SUCCESS marker: {e}')
 
-# Upload bidding_schedules.json
-schedules_file = Path('script_input/bidding_schedules.json')
-if schedules_file.exists():
-    remote_path = 'schedules/bidding_schedules.json'
-    try:
-        supabase.storage.from_(bucket).upload(
-            remote_path,
-            schedules_file.read_bytes(),
-            {'content-type': 'application/json', 'upsert': 'true'}
-        )
-        logger.info(f'Uploaded: {remote_path}')
-    except Exception as e:
-        logger.error(f'Failed to upload bidding_schedules.json: {e}')
-
-# Upload overall results files (flat structure)
-overall_dir = Path('script_input/overallBossResults')
-if overall_dir.exists():
-    for xlsx_file in overall_dir.glob('*.xlsx'):
-        remote_path = f'input/overallBossResults/{xlsx_file.name}'
-        try:
-            supabase.storage.from_(bucket).upload(
-                remote_path,
-                xlsx_file.read_bytes(),
-                {'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'upsert': 'true'}
-            )
-            logger.info(f'Uploaded: {remote_path}')
-        except Exception as e:
-            logger.error(f'Failed to upload {xlsx_file.name}: {e}')
-
-# Upload scraped HTML files (preserve raw data for debugging/reprocessing)
-html_dir = Path('script_input/classTimingsFull')
-if html_dir.exists():
-    for html_file in html_dir.rglob('*.html'):
-        remote_path = f'input/classTimingsFull/{html_file.relative_to(html_dir)}'
-        try:
-            supabase.storage.from_(bucket).upload(
-                str(remote_path),
-                html_file.read_bytes(),
-                {'content-type': 'text/html', 'upsert': 'true'}
-            )
-            logger.info(f'Uploaded: {remote_path}')
-        except Exception as e:
-            logger.error(f'Failed to upload HTML {html_file.name}: {e}')
-
-logger.info('Supabase Storage upload completed')
+logger.info('Supabase Storage upload of pipeline outputs completed')
 " 2>&1
 
     if [ $? -ne 0 ]; then

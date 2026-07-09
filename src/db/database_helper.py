@@ -26,9 +26,13 @@ class DatabaseHelper:
             return None
 
     @staticmethod
-    def insert_df(connection, df, table_name, logger=None):
+    def insert_df(connection, df, table_name, logger=None, on_conflict_do_nothing=False):
         """
         Bulk INSERT for a dataframe using psycopg2 execute_batch.
+
+        Args:
+            on_conflict_do_nothing: If True, appends ON CONFLICT DO NOTHING
+                                    to skip rows that violate unique constraints.
         """
         if df.empty:
             return
@@ -41,25 +45,47 @@ class DatabaseHelper:
             sql_stub = f'''
                 INSERT INTO "{table_name}" ({', '.join(f'"{c}"' for c in cols)})
                 VALUES ({', '.join(['%s'] * len(cols))})
+                { 'ON CONFLICT DO NOTHING' if on_conflict_do_nothing else '' }
             '''
-            # Convert numpy types to native Python types to avoid psycopg2 type issues
-            def to_native(val):
+            # Convert numpy types to native Python types; also guard against
+            # values that exceed PostgreSQL INTEGER range (4-byte signed).
+            _PG_INT_MIN = -2147483648
+            _PG_INT_MAX = 2147483647
+
+            def to_native(val, col_name=""):
                 if val is None:
                     return None
                 import numpy as np
                 if isinstance(val, np.integer):
-                    return int(val)
+                    converted = int(val)
+                    if converted < _PG_INT_MIN or converted > _PG_INT_MAX:
+                        raise ValueError(
+                            f"Value {converted} in column '{col_name}' of table '{table_name}' "
+                            f"exceeds PostgreSQL INTEGER range [{_PG_INT_MIN}, {_PG_INT_MAX}]"
+                        )
+                    return converted
                 if isinstance(val, np.floating):
                     return float(val)
                 if isinstance(val, np.bool_):
                     return bool(val)
                 if isinstance(val, np.datetime64):
                     return pd.Timestamp(val).to_pydatetime()
+                if isinstance(val, int) and not isinstance(val, bool):
+                    if val < _PG_INT_MIN or val > _PG_INT_MAX:
+                        raise ValueError(
+                            f"Value {val} in column '{col_name}' of table '{table_name}' "
+                            f"exceeds PostgreSQL INTEGER range [{_PG_INT_MIN}, {_PG_INT_MAX}]"
+                        )
                 return val
 
             # Use to_dict('records') and convert each row
             records = df.to_dict('records')
-            values = [[to_native(row[col]) for col in cols] for row in records]
+            values = []
+            for row in records:
+                converted = []
+                for col in cols:
+                    converted.append(to_native(row[col], col_name=col))
+                values.append(converted)
             execute_batch(cursor, sql_stub, values, page_size=1000)
             connection.commit()  # Commit after successful batch
             if logger is not None:

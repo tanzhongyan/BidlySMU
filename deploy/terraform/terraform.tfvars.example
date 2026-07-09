@@ -27,7 +27,6 @@ security_group_name = "default"
 ecs_cpu             = 1024
 ecs_memory          = 2048
 acad_term_id        = "AY202526T3A"
-pipeline_image_tag  = "v1.0.0"
 ecs_container_name  = "bidlysmu-pipeline"
 
 # =============================================================================
@@ -35,7 +34,7 @@ ecs_container_name  = "bidlysmu-pipeline"
 # =============================================================================
 lambda_memory       = 512
 lambda_timeout      = 300
-scheduler_image_tag = "v1.0.0"
+lambda_deploy_id    = ""
 
 # =============================================================================
 # TRUBA API CONFIGURATION

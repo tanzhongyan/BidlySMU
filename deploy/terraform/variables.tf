@@ -47,20 +47,21 @@ variable "security_group_name" {
 # =============================================================================
 
 variable "ecs_cpu" {
-  description = "CPU units for ECS task"
-  type        = number
-  default     = 1024
-}
-
-variable "ecs_memory" {
-  description = "Memory (MB) for ECS task"
+  description = "CPU units for ECS task (2048 = 2 vCPU, needed for dual headless Chrome)"
   type        = number
   default     = 2048
 }
 
+variable "ecs_memory" {
+  description = "Memory (MB) for ECS task (4096 prevents Chrome OOM with parallel scrapers)"
+  type        = number
+  default     = 4096
+}
+
 variable "pipeline_image_tag" {
-  description = "Docker image tag for pipeline (required — set in tfvars)"
+  description = "Docker image tag for pipeline (defaults to 'latest')"
   type        = string
+  default     = "latest"
 }
 
 variable "ecs_container_name" {
@@ -105,7 +106,7 @@ variable "ecr_image_retention_count" {
 variable "lambda_memory" {
   description = "Memory (MB) for Lambda function"
   type        = number
-  default     = 512
+  default     = 1769
 }
 
 variable "lambda_timeout" {
@@ -115,8 +116,15 @@ variable "lambda_timeout" {
 }
 
 variable "scheduler_image_tag" {
-  description = "Docker image tag for Lambda scheduler (required — set in tfvars)"
+  description = "Docker image tag for Lambda scheduler (defaults to 'latest')"
   type        = string
+  default     = "latest"
+}
+
+variable "lambda_deploy_id" {
+  description = "Change this to any new value to force Lambda to pull the latest image (e.g., git SHA or timestamp)"
+  type        = string
+  default     = ""
 }
 
 # =============================================================================

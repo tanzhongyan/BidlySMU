@@ -25,7 +25,7 @@ import sys
 sys.path.insert(0, "/app")
 
 from src.scraper.trumba_client import TrubaClient, TrubaConfig
-from src.config import dash_format_to_acad_term_id
+from src.config import dash_format_to_acad_term_id, abbrev_window_to_full
 from supabase import create_client
 
 # --- Environment configuration ---
@@ -172,6 +172,12 @@ class ScheduleTracker:
         }
         return tracking
 
+    def remove_from_tracking(self, tracking: Dict, term: str, schedule_name: str) -> Dict:
+        """Remove a schedule from the tracking dict (used when recreating)."""
+        if term in tracking and schedule_name in tracking.get(term, {}):
+            del tracking[term][schedule_name]
+        return tracking
+
 
 # =============================================================================
 # EventBridge Scheduler — wraps boto3 EventBridge Scheduler client
@@ -204,25 +210,71 @@ class EventBridgeScheduler:
         except self._scheduler.exceptions.ResourceNotFoundException:
             return False
 
+    def get_schedule_payload(self, name):
+        """Return the input payload of an existing schedule, or None."""
+        try:
+            resp = self._scheduler.get_schedule(Name=name)
+            import json
+            return json.loads(resp["Target"]["Input"])
+        except (self._scheduler.exceptions.ResourceNotFoundException, KeyError, json.JSONDecodeError):
+            return None
+
+    def delete_schedule(self, name):
+        """Delete an EventBridge schedule and its retry schedules by name.
+        No-op if they don't exist.
+        """
+        for schedule_name in [name, f"{name}-retry1", f"{name}-retry2"]:
+            try:
+                self._scheduler.delete_schedule(Name=schedule_name)
+            except self._scheduler.exceptions.ResourceNotFoundException:
+                pass
+
     def create_schedule(self, schedule_name, scrape_time, term, abbrev,
-                        results_datetime):
-        """Create a one-time EventBridge schedule that triggers a pipeline run."""
+                        results_datetime, previous_window=None):
+        """Create a one-time EventBridge schedule that triggers a pipeline run.
+
+        Also creates 2 retry schedules (+2h and +4h) that check for success
+        before re-running.
+        """
+        base_input = {
+            "trigger": "run_pipeline",
+            "acad_term_id": dash_format_to_acad_term_id(term),
+            "window": abbrev,
+            "results_datetime": results_datetime,
+            "previous_window": previous_window,
+        }
+
+        # Primary schedule
         self._scheduler.create_schedule(
             Name=schedule_name,
-            ScheduleExpression=f"at({scrape_time.strftime('%Y-%m-%dT%H:%M:%S')})",
+            # All times from bidding_schedules.json / Trumba are SGT wall-clock.
+            # EventBridge at() interprets naive timestamps as UTC, so shift -8h.
+            ScheduleExpression=f"at({(scrape_time - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%S')})",
             FlexibleTimeWindow={"Mode": "OFF"},
             Target={
                 "Arn": self._lambda_arn or "",
                 "RoleArn": self._scheduler_role_arn,
-                "Input": json.dumps({
-                    "trigger": "run_pipeline",
-                    "acad_term_id": dash_format_to_acad_term_id(term),
-                    "window": abbrev,
-                    "results_datetime": results_datetime,
-                }),
+                "Input": json.dumps({**base_input, "retry_attempt": 0}),
             },
             ActionAfterCompletion="DELETE",
         )
+
+        # Retry schedules (+2h and +4h)
+        from datetime import timedelta
+        for retry_idx, hours_offset in enumerate([2, 4], start=1):
+            retry_time = scrape_time + timedelta(hours=hours_offset)
+            retry_name = f"{schedule_name}-retry{retry_idx}"
+            self._scheduler.create_schedule(
+                Name=retry_name,
+                ScheduleExpression=f"at({(retry_time - timedelta(hours=8)).strftime('%Y-%m-%dT%H:%M:%S')})",
+                FlexibleTimeWindow={"Mode": "OFF"},
+                Target={
+                    "Arn": self._lambda_arn or "",
+                    "RoleArn": self._scheduler_role_arn,
+                    "Input": json.dumps({**base_input, "retry_attempt": retry_idx}),
+                },
+                ActionAfterCompletion="DELETE",
+            )
 
 
 # =============================================================================
@@ -251,6 +303,17 @@ def convert_term_to_acad_term_id(term: str) -> str:
 # Dual-mode Lambda handler
 # =============================================================================
 
+def _pipeline_already_succeeded(acad_term_id: str, window: str) -> bool:
+    """Check if the pipeline already produced output for this term/window."""
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        supabase.storage.from_("bidlysmu-files").download(
+            f"output/{acad_term_id}/{window}/_SUCCESS"
+        )
+        return True
+    except Exception:
+        return False
+
 def lambda_handler(event, context):
     """Dual-mode handler: monthly calendar fetch OR pipeline run trigger."""
     try:
@@ -261,13 +324,35 @@ def lambda_handler(event, context):
         # =============================================================
         if trigger == "run_pipeline":
             acad_term_id = event.get("acad_term_id")
-            window = event.get("window")
+            window = event.get("window")  # may be None for cleanup runs
+            previous_window = event.get("previous_window")
             results_datetime = event.get("results_datetime", "")
 
-            if not acad_term_id or not window:
-                raise ValueError("run_pipeline trigger requires acad_term_id and window")
+            if not acad_term_id:
+                raise ValueError("run_pipeline trigger requires acad_term_id")
 
-            logger.info(f"Mode 2: Starting ECS task for {acad_term_id}/{window}")
+            retry_attempt = event.get("retry_attempt", 0)
+
+            # If this is a retry, check whether the pipeline already succeeded
+            check_window = window or previous_window
+            if retry_attempt > 0 and check_window and _pipeline_already_succeeded(acad_term_id, check_window):
+                logger.info(
+                    f"Pipeline already succeeded for {acad_term_id}/{check_window}, "
+                    f"skipping retry attempt {retry_attempt}."
+                )
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps({
+                        "message": f"Pipeline already succeeded for {acad_term_id}/{check_window}, skipped retry",
+                        "skipped": True,
+                    })
+                }
+
+            logger.info(
+                f"Mode 2: Starting ECS task for {acad_term_id}/"
+                f"current={window or '(none)'} prev={previous_window or '(none)'} "
+                f"(attempt {retry_attempt + 1})"
+            )
 
             ecs = boto3.client("ecs", region_name=AWS_REGION)
             resp = ecs.run_task(
@@ -286,8 +371,10 @@ def lambda_handler(event, context):
                         "name": ECS_CONTAINER_NAME,
                         "environment": [
                             {"name": "ACAD_TERM_ID", "value": acad_term_id},
-                            {"name": "CURRENT_WINDOW_NAME", "value": window},
-                            {"name": "RESULTS_DATETIME", "value": results_datetime}
+                            {"name": "TARGET_CURRENT_WINDOW", "value": abbrev_window_to_full(window) if window else ""},
+                            {"name": "TARGET_PREVIOUS_WINDOW", "value": abbrev_window_to_full(previous_window) if previous_window else ""},
+                            {"name": "RESULTS_DATETIME", "value": results_datetime},
+                            {"name": "RETRY_ATTEMPT", "value": str(retry_attempt)}
                         ]
                     }]
                 }
@@ -349,6 +436,7 @@ def lambda_handler(event, context):
             for term, windows in updated.items():
                 for i, window in enumerate(windows):
                     abbrev = window[2]
+                    previous_abbrev = windows[i-1][2] if i > 0 else None
                     name = f"bidlysmu-pipeline-{term}-{abbrev}".replace(" ", "-").replace("/", "-")
 
                     if tracker.is_tracked(tracking, term, name):
@@ -366,10 +454,51 @@ def lambda_handler(event, context):
                         term=term,
                         abbrev=abbrev,
                         results_datetime=window[0],
+                        previous_window=previous_abbrev,
                     )
                     tracking = tracker.add_to_tracking(tracking, term, name, scrape_time, window[0])
                     schedules_created.append(name)
                     logger.info(f"Schedule: {name} at {scrape_time.isoformat()}")
+
+                # Schedule a final cleanup run after the last window's results
+                # are released.  If new windows have been added since the last
+                # monthly scrape, delete the old cleanup and recreate it pointing
+                # at the new last window.
+                if windows:
+                    last = windows[-1]
+                    last_abbrev = last[2]
+                    last_results_at = datetime.fromisoformat(last[0])
+                    cleanup_time = last_results_at + timedelta(hours=1)
+
+                    cleanup_name = f"bidlysmu-pipeline-{term}-CLEANUP".replace(" ", "-").replace("/", "-")
+
+                    needs_cleanup = False
+                    if sched.schedule_exists(cleanup_name):
+                        existing_payload = sched.get_schedule_payload(cleanup_name)
+                        existing_prev = existing_payload.get('previous_window') if existing_payload else None
+                        if existing_prev != last_abbrev:
+                            logger.info(
+                                f"Cleanup target changed: {existing_prev} -> {last_abbrev}, "
+                                f"deleting old schedule and recreating"
+                            )
+                            sched.delete_schedule(cleanup_name)
+                            tracker.remove_from_tracking(tracking, term, cleanup_name)
+                            needs_cleanup = True
+                    elif not tracker.is_tracked(tracking, term, cleanup_name):
+                        needs_cleanup = True
+
+                    if needs_cleanup and cleanup_time > datetime.now():
+                        sched.create_schedule(
+                            schedule_name=cleanup_name,
+                            scrape_time=cleanup_time,
+                            term=term,
+                            abbrev=None,
+                            results_datetime=last[0],
+                            previous_window=last_abbrev,
+                        )
+                        tracking = tracker.add_to_tracking(tracking, term, cleanup_name, cleanup_time, last[0])
+                        schedules_created.append(cleanup_name)
+                        logger.info(f"Schedule (cleanup): {cleanup_name} at {cleanup_time.isoformat()}")
 
             if schedules_created:
                 tracker.upload_tracking_file(tracking)

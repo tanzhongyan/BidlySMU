@@ -22,8 +22,6 @@ jobs:
   build-pipeline:
     name: Build & Push Pipeline Image
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,10 +39,6 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set image tag
-        id: meta
-        run: echo "version=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
-
       - name: Build and push pipeline image
         uses: docker/build-push-action@v6
         with:
@@ -53,7 +47,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ secrets.PIPELINE_ECR_URL }}:${{ steps.meta.outputs.version }}
+            ${{ secrets.PIPELINE_ECR_URL }}:v1.0.${{ github.run_number }}
             ${{ secrets.PIPELINE_ECR_URL }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -64,8 +58,6 @@ jobs:
   build-scheduler:
     name: Build & Push Scheduler Image
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -83,10 +75,6 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Set image tag
-        id: meta
-        run: echo "version=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
-
       - name: Build and push scheduler image
         uses: docker/build-push-action@v6
         with:
@@ -95,7 +83,7 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ secrets.SCHEDULER_ECR_URL }}:${{ steps.meta.outputs.version }}
+            ${{ secrets.SCHEDULER_ECR_URL }}:v1.0.${{ github.run_number }}
             ${{ secrets.SCHEDULER_ECR_URL }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -119,7 +107,7 @@ jobs:
         run: |
           aws lambda update-function-code \
             --function-name ${{ secrets.LAMBDA_FUNCTION_NAME }} \
-            --image-uri ${{ secrets.SCHEDULER_ECR_URL }}:${{ needs.build-scheduler.outputs.image_tag }}
+            --image-uri ${{ secrets.SCHEDULER_ECR_URL }}:latest
 
   # ===========================================================================
   # Register New ECS Task Definition Revision
@@ -152,7 +140,7 @@ jobs:
               runtimePlatform: runtimePlatform,
               containerDefinitions: containerDefinitions
             }' \
-            | jq 'del(.runtimePlatform | select(. == null)) | .containerDefinitions[0].image = "${{ secrets.PIPELINE_ECR_URL }}:${{ needs.build-pipeline.outputs.image_tag }}"' \
+            | jq 'del(.runtimePlatform | select(. == null)) | .containerDefinitions[0].image = "${{ secrets.PIPELINE_ECR_URL }}:latest"' \
             > /tmp/task-def.json
 
           aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json

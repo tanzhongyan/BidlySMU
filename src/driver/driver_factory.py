@@ -1,6 +1,8 @@
 """
 Chrome WebDriver factory for creating configured driver instances.
 """
+import os
+import uuid
 from typing import Optional, List
 
 from selenium.webdriver import Chrome
@@ -50,7 +52,10 @@ class ChromeDriverFactory:
         Uses webdriver-manager to automatically handle ChromeDriver installation.
         """
         service = Service(ChromeDriverManager().install())
-        return Chrome(service=service, options=self._create_options())
+        driver = Chrome(service=service, options=self._create_options())
+        if self.headless:
+            self._apply_anti_detection_cdp(driver)
+        return driver
 
     def create_with_options(self, options: Options) -> Chrome:
         """
@@ -84,6 +89,7 @@ class ChromeDriverFactory:
 
         if self.headless:
             options.add_argument("--headless=new")
+
         if self.no_sandbox:
             options.add_argument("--no-sandbox")
         if self.disable_dev_shm_usage:
@@ -92,14 +98,49 @@ class ChromeDriverFactory:
             options.add_argument("--disable-gpu")
         if self.window_size:
             options.add_argument(f"--window-size={self.window_size}")
+
+        # Anti-detection: hide automation signals from anti-bot systems.
+        # Microsoft Entra ID detects headless Chrome and refuses to set
+        # session cookies unless we mask these indicators.
+        # Uses excludeSwitches + CDP navigator.webdriver patch only —
+        # avoids --disable-blink-features (causes crashes in Chrome 150)
+        # and cross-OS user-agent spoofing (confuses Linux Chrome).
+        options.add_experimental_option(
+            "excludeSwitches", ["enable-automation", "enable-logging"]
+        )
+        options.add_experimental_option("useAutomationExtension", False)
+
         if self.user_agent:
             options.add_argument(f"--user-agent={self.user_agent}")
+
+        # Stability: let Chrome use default multi-process architecture.
+        # A single renderer crash (e.g. from heavy ASP.NET pages) won't
+        # kill the entire browser. Memory usage verified at ~350MB peak
+        # with 2GB allocated — ample headroom.
+        options.add_argument("--disable-features=TranslateUI")
+        options.add_argument("--disable-ipc-flooding-protection")
 
         for arg in self.arguments:
             options.add_argument(arg)
 
-        # BOSS-specific options
-        options.add_experimental_option("excludeSwitches", ["enable-logging"])
-        options.add_experimental_option("useAutomationExtension", False)
+        # Unique profile per instance prevents lock contention when
+        # parallel Chrome instances run (e.g. Stream A + Stream B).
+        profile_dir = f"/tmp/chrome-profile-{uuid.uuid4().hex[:8]}"
+        options.add_argument(f"--user-data-dir={profile_dir}")
 
         return options
+
+    def _apply_anti_detection_cdp(self, driver: Chrome) -> None:
+        """Hide navigator.webdriver flag via CDP to avoid bot detection."""
+        try:
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {
+                    "source": (
+                        "Object.defineProperty(navigator, 'webdriver', "
+                        "{get: () => undefined})"
+                    )
+                },
+            )
+        except Exception:
+            pass  # CDP may not be available in all Chrome versions

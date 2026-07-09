@@ -34,6 +34,24 @@ from src.pipeline.dtos.professor_dto import ProfessorDTO
 SHEET_STANDALONE = 'standalone'
 SHEET_MULTIPLE = 'multiple'
 
+# Mapping from plural result/cache keys to actual singular DB table names.
+# Derived from Prisma schema (@@map directives).
+# Cache keys (plural) are used internally; DB tables use singular names.
+RESULT_KEY_TO_TABLE = {
+    'acad_terms': 'acad_term',
+    'courses': 'courses',
+    'professors': 'professors',
+    'faculties': 'faculties',
+    'bid_windows': 'bid_window',
+    'classes': 'classes',
+    'class_timings': 'class_timing',
+    'class_exam_timings': 'class_exam_timing',
+    'class_availabilities': 'class_availability',
+    'bid_results': 'bid_result',
+    'bid_predictions': 'bid_prediction',
+    'safety_factors': 'safety_factor',
+}
+
 
 class PipelineCoordinator:
     """Coordinates pipeline execution with pure function processors."""
@@ -60,15 +78,20 @@ class PipelineCoordinator:
 
     def _load_caches(self):
         """Load caches from db_cache directory. Downloads from DB if cache doesn't exist."""
+        # Cache keys are plural — they match self.results keys so that
+        # _build_lookup / _build_composite_lookup can use the same name
+        # for both cache and results lookups.
         cache_files = {
-            'acad_term': 'acad_term_cache.pkl',
+            'acad_terms': 'acad_term_cache.pkl',
             'courses': 'courses_cache.pkl',
             'professors': 'professors_cache.pkl',
             'faculties': 'faculties_cache.pkl',
-            'bid_window': 'bid_window_cache.pkl',
+            'bid_windows': 'bid_window_cache.pkl',
             'classes': 'classes_cache.pkl',
-            'class_timing': 'class_timing_cache.pkl',
-            'class_exam_timing': 'class_exam_timing_cache.pkl',
+            'class_timings': 'class_timing_cache.pkl',
+            'class_exam_timings': 'class_exam_timing_cache.pkl',
+            'bid_results': 'bid_result_cache.pkl',
+            'class_availabilities': 'class_availability_cache.pkl',
         }
 
         tables_to_download = []
@@ -89,10 +112,11 @@ class PipelineCoordinator:
                     "Please ensure the database is accessible or restore db_cache/ from a previous run."
                 )
             self._logger.info(f"Cache miss for {tables_to_download} - downloading from database...")
+            actual_tables = [RESULT_KEY_TO_TABLE[t] for t in tables_to_download]
             DatabaseHelper.download_cache(
                 self._db_connection,
                 self.config.cache_dir,
-                tables_to_download,
+                actual_tables,
                 self._logger
             )
             for cache_name in tables_to_download:
@@ -115,14 +139,14 @@ class PipelineCoordinator:
         Processors iterate over caches with `for _, item in cache.items()` expecting
         (key, value) pairs, not (index, Series) pairs from DataFrame iteration.
         """
-        # acad_term: {id: row_dict}
-        if isinstance(self.db_cache.get('acad_term'), pd.DataFrame):
-            df = self.db_cache['acad_term']
+        # acad_terms: {id: row_dict}
+        if isinstance(self.db_cache.get('acad_terms'), pd.DataFrame):
+            df = self.db_cache['acad_terms']
             if not df.empty and 'id' in df.columns:
-                self.db_cache['acad_term'] = dict(zip(df['id'], df.to_dict('records')))
+                self.db_cache['acad_terms'] = dict(zip(df['id'], df.to_dict('records')))
             else:
-                self.db_cache['acad_term'] = {}
-            self._logger.info(f"Converted acad_term cache to dict with {len(self.db_cache['acad_term'])} entries")
+                self.db_cache['acad_terms'] = {}
+            self._logger.info(f"Converted acad_terms cache to dict with {len(self.db_cache['acad_terms'])} entries")
 
         # courses: {code: row_dict}
         if isinstance(self.db_cache.get('courses'), pd.DataFrame):
@@ -155,17 +179,17 @@ class PipelineCoordinator:
                 self.db_cache['faculties'] = {}
             self._logger.info(f"Converted faculties cache to dict with {len(self.db_cache['faculties'])} entries")
 
-        # bid_window: {(acad_term_id, round, window): row_dict}
-        if isinstance(self.db_cache.get('bid_window'), pd.DataFrame):
-            df = self.db_cache['bid_window']
+        # bid_windows: {(acad_term_id, round, window): row_dict}
+        if isinstance(self.db_cache.get('bid_windows'), pd.DataFrame):
+            df = self.db_cache['bid_windows']
             if not df.empty and all(col in df.columns for col in ['acad_term_id', 'round', 'window']):
-                self.db_cache['bid_window'] = {}
+                self.db_cache['bid_windows'] = {}
                 for _, row in df.iterrows():
                     key = (row['acad_term_id'], str(row['round']), int(row['window']))
-                    self.db_cache['bid_window'][key] = row.to_dict()
+                    self.db_cache['bid_windows'][key] = row.to_dict()
             else:
-                self.db_cache['bid_window'] = {}
-            self._logger.info(f"Converted bid_window cache to dict with {len(self.db_cache['bid_window'])} entries")
+                self.db_cache['bid_windows'] = {}
+            self._logger.info(f"Converted bid_windows cache to dict with {len(self.db_cache['bid_windows'])} entries")
 
         # classes: {(acad_term_id, boss_id, professor_id): row_dict}
         if isinstance(self.db_cache.get('classes'), pd.DataFrame):
@@ -179,9 +203,9 @@ class PipelineCoordinator:
                 self.db_cache['classes'] = {}
             self._logger.info(f"Converted classes cache to dict with {len(self.db_cache['classes'])} entries")
 
-        # class_timing: set of (class_id, day_of_week, start_time, end_time, venue) keys
-        if isinstance(self.db_cache.get('class_timing'), pd.DataFrame):
-            df = self.db_cache['class_timing']
+        # class_timings: set of (class_id, day_of_week, start_time, end_time, venue) keys
+        if isinstance(self.db_cache.get('class_timings'), pd.DataFrame):
+            df = self.db_cache['class_timings']
             if not df.empty and 'class_id' in df.columns:
                 existing_timing_keys = set()
                 for _, row in df.iterrows():
@@ -193,20 +217,44 @@ class PipelineCoordinator:
                         '' if pd.isna(row.get('venue')) else str(row.get('venue'))
                     )
                     existing_timing_keys.add(key)
-                self.db_cache['class_timing'] = existing_timing_keys
+                self.db_cache['class_timings'] = existing_timing_keys
             else:
-                self.db_cache['class_timing'] = set()
-            self._logger.info(f"Converted class_timing cache to set with {len(self.db_cache['class_timing'])} entries")
+                self.db_cache['class_timings'] = set()
+            self._logger.info(f"Converted class_timings cache to set with {len(self.db_cache['class_timings'])} entries")
 
-        # class_exam_timing: set of class_ids that already have exam timings
-        if isinstance(self.db_cache.get('class_exam_timing'), pd.DataFrame):
-            df = self.db_cache['class_exam_timing']
+        # class_exam_timings: set of class_ids that already have exam timings
+        if isinstance(self.db_cache.get('class_exam_timings'), pd.DataFrame):
+            df = self.db_cache['class_exam_timings']
             if not df.empty and 'class_id' in df.columns:
                 existing_exam_class_ids = set(df['class_id'].astype(str).unique())
-                self.db_cache['class_exam_timing'] = existing_exam_class_ids
+                self.db_cache['class_exam_timings'] = existing_exam_class_ids
             else:
-                self.db_cache['class_exam_timing'] = set()
-            self._logger.info(f"Converted class_exam_timing cache to set with {len(self.db_cache['class_exam_timing'])} entries")
+                self.db_cache['class_exam_timings'] = set()
+            self._logger.info(f"Converted class_exam_timings cache to set with {len(self.db_cache['class_exam_timings'])} entries")
+
+        # bid_results: set of (bid_window_id, class_id) tuples for dedup
+        if isinstance(self.db_cache.get('bid_results'), pd.DataFrame):
+            df = self.db_cache['bid_results']
+            if not df.empty and 'bid_window_id' in df.columns and 'class_id' in df.columns:
+                existing_bid_result_keys = set()
+                for _, row in df.iterrows():
+                    existing_bid_result_keys.add((int(row['bid_window_id']), str(row['class_id'])))
+                self.db_cache['bid_results'] = existing_bid_result_keys
+            else:
+                self.db_cache['bid_results'] = set()
+            self._logger.info(f"Converted bid_results cache to set with {len(self.db_cache['bid_results'])} entries")
+
+        # class_availabilities: set of (class_id, bid_window_id) tuples for dedup
+        if isinstance(self.db_cache.get('class_availabilities'), pd.DataFrame):
+            df = self.db_cache['class_availabilities']
+            if not df.empty and 'class_id' in df.columns and 'bid_window_id' in df.columns:
+                existing_availability_keys = set()
+                for _, row in df.iterrows():
+                    existing_availability_keys.add((str(row['class_id']), int(row['bid_window_id'])))
+                self.db_cache['class_availabilities'] = existing_availability_keys
+            else:
+                self.db_cache['class_availabilities'] = set()
+            self._logger.info(f"Converted class_availabilities cache to set with {len(self.db_cache['class_availabilities'])} entries")
 
     def load_raw_data(self):
         """Load raw data from Excel file."""
@@ -236,7 +284,7 @@ class PipelineCoordinator:
         # Process academic terms
         acad_term_processor = AcadTermProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
-            acad_term_cache=self.db_cache.get('acad_term', {}),
+            acad_term_cache=self.db_cache.get('acad_terms', {}),
             logger=self._logger
         )
         acad_terms_new, acad_terms_updated = acad_term_processor.process()
@@ -244,7 +292,7 @@ class PipelineCoordinator:
         # Fallback: ensure current term exists even if not in scraped data
         expected_acad_term_id = dash_format_to_acad_term_id(self.config.start_ay_term)
         existing_ids = {t.id for t in acad_terms_new}
-        acad_cache = self.db_cache.get('acad_term', {})
+        acad_cache = self.db_cache.get('acad_terms', {})
         db_ids = set(acad_cache.keys()) if isinstance(acad_cache, dict) else set()
 
         if expected_acad_term_id not in existing_ids and expected_acad_term_id not in db_ids:
@@ -302,7 +350,7 @@ class PipelineCoordinator:
         # Process bid windows
         bid_window_processor = BidWindowProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
-            bid_window_cache=self.db_cache.get('bid_window', {}),
+            bid_window_cache=self.db_cache.get('bid_windows', {}),
             expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
             bidding_schedules=self.config.bidding_schedules,
             results_datetime=RESULTS_DATETIME,
@@ -375,7 +423,7 @@ class PipelineCoordinator:
         self._logger.info(f"📊 Built record_key -> class_ids mapping with {len(record_key_to_class_ids)} entries")
 
         # Process class timings
-        existing_timing_keys = self.db_cache.get('class_timing', set())
+        existing_timing_keys = self.db_cache.get('class_timings', set())
         class_timing_processor = ClassTimingProcessor(
             raw_data=self.raw_data[SHEET_MULTIPLE],
             class_lookup=self.results['class_lookup'],
@@ -388,7 +436,7 @@ class PipelineCoordinator:
         self._logger.info(f"✅ Processed {len(new_class_timings)} class timings")
 
         # Process exam timings
-        existing_exam_class_ids = self.db_cache.get('class_exam_timing', set())
+        existing_exam_class_ids = self.db_cache.get('class_exam_timings', set())
         class_exam_timing_processor = ClassExamTimingProcessor(
             raw_data=self.raw_data[SHEET_MULTIPLE],
             class_lookup=self.results['class_lookup'],
@@ -411,6 +459,7 @@ class PipelineCoordinator:
             bid_window_lookup=self.results['bid_window_lookup'],
             bidding_schedule=bidding_schedule,
             expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+            existing_availability_keys=self.db_cache.get('class_availabilities', set()),
             logger=self._logger
         )
         new_class_avail = class_avail_processor.process()
@@ -425,6 +474,7 @@ class PipelineCoordinator:
             class_lookup=self.results['class_lookup'],
             bid_window_lookup=self.results['bid_window_lookup'],
             course_lookup=self.results['course_lookup'],
+            existing_bid_result_keys=self.db_cache.get('bid_results', set()),
             bidding_schedule=bidding_schedule,
             expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
             logger=self._logger
@@ -437,29 +487,33 @@ class PipelineCoordinator:
         # Phase 3: Bid Predictions
         # ============================================================
 
-        bid_prediction_processor = BidPredictionProcessor(
-            raw_data=self.raw_data[SHEET_STANDALONE],
-            class_lookup=self.results['class_lookup'],
-            bid_window_lookup=self.results['bid_window_lookup'],
-            multiple_lookup=self._multiple_lookup,
-            bidding_schedule=bidding_schedule,
-            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
-            model_dir='models',
-            logger=self._logger
-        )
-        predictions = bid_prediction_processor.process()
-        self.results['bid_predictions'] = predictions
-        self._logger.info(f"✅ Generated {len(predictions)} bid predictions")
+        try:
+            bid_prediction_processor = BidPredictionProcessor(
+                raw_data=self.raw_data[SHEET_STANDALONE],
+                class_lookup=self.results['class_lookup'],
+                bid_window_lookup=self.results['bid_window_lookup'],
+                multiple_lookup=self._multiple_lookup,
+                bidding_schedule=bidding_schedule,
+                expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+                model_dir='models',
+                logger=self._logger
+            )
+            predictions = bid_prediction_processor.process()
+            self.results['bid_predictions'] = predictions
+            self._logger.info(f"✅ Generated {len(predictions)} bid predictions")
 
-        safety_factor_processor = SafetyFactorProcessor(
-            expected_acad_term_id=ACAD_TERM_ID,  # BOSS format required for database FK
-            cache_dir=self.config.cache_dir,
-            logger=self._logger
-        )
-        safety_factors = safety_factor_processor.process()
-        if safety_factors:
-            self.results['safety_factors'] = safety_factors
-            self._logger.info(f"✅ Generated {len(safety_factors)} safety factor entries")
+            safety_factor_processor = SafetyFactorProcessor(
+                expected_acad_term_id=ACAD_TERM_ID,
+                cache_dir=self.config.cache_dir,
+                logger=self._logger,
+                db_connection=self._db_connection,
+            )
+            safety_factors = safety_factor_processor.process()
+            if safety_factors:
+                self.results['safety_factors'] = safety_factors
+                self._logger.info(f"✅ Generated {len(safety_factors)} safety factor entries")
+        except Exception as e:
+            self._logger.error(f"Phase 3 (predictions) failed — saving Phase 1-2 results anyway: {e}")
 
         # Save results to CSV and database
         self._logger.info("💾 Saving results...")
@@ -514,14 +568,19 @@ class PipelineCoordinator:
         return lookup
 
     def _dict_to_dto(self, dimension: str, item: dict):
-        """Convert a dict from database cache to a DTO."""
-        if dimension == 'courses':
+        """Convert a dict from database cache to a DTO.
+
+        Accepts both singular (DB table name) and plural (results key)
+        dimension names so that both _build_lookup and _build_composite_lookup
+        work regardless of which convention the caller uses.
+        """
+        if dimension in ('courses',):
             return CourseDTO.from_dict(item) if hasattr(CourseDTO, 'from_dict') else self._create_course_dto(item)
-        elif dimension == 'acad_terms':
+        elif dimension in ('acad_term', 'acad_terms'):
             return AcadTermDTO.from_dict(item) if hasattr(AcadTermDTO, 'from_dict') else None
-        elif dimension == 'professors':
+        elif dimension in ('professors',):
             return ProfessorDTO.from_dict(item) if hasattr(ProfessorDTO, 'from_dict') else None
-        elif dimension == 'bid_windows':
+        elif dimension in ('bid_window', 'bid_windows'):
             return BidWindowDTO.from_dict(item)
         return None
 
@@ -729,19 +788,14 @@ class PipelineCoordinator:
             self._logger.warning("No database connection - skipping database save")
             return
 
-        tables = [
-            ('acad_terms', 'acad_term'),
-            ('courses', 'courses'),
-            ('professors', 'professors'),
-            ('bid_windows', 'bid_window'),
-            ('classes', 'classes'),
-            ('class_timings', 'class_timing'),
-            ('class_exam_timings', 'class_exam_timing'),
-            ('class_availabilities', 'class_availability'),
-            ('bid_results', 'bid_result'),
-            ('bid_predictions', 'bid_prediction'),
-            ('safety_factors', 'safety_factor'),
-        ]
+        tables = list(RESULT_KEY_TO_TABLE.items())
+
+        # Tables whose primary key is not a single 'id' column.
+        # update_df uses these columns to build WHERE clauses.
+        _UPDATE_KEY_MAP = {
+            'bid_results': ['bid_window_id', 'class_id'],
+            'class_availabilities': ['class_id', 'bid_window_id'],
+        }
 
         for result_key, table_name in tables:
             if result_key not in self.results:
@@ -752,15 +806,21 @@ class PipelineCoordinator:
                 # Has 'new' and 'updated' keys
                 if data.get('new'):
                     df = pd.DataFrame([d.to_db_row() for d in data['new']])
-                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger)
+                    on_conflict = (result_key in ('bid_results', 'safety_factors'))
+                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
+                                             on_conflict_do_nothing=on_conflict)
                 if data.get('updated'):
                     df = pd.DataFrame([d.to_db_row() for d in data['updated']])
-                    DatabaseHelper.update_df(self._db_connection, df, table_name, ['id'], self._logger)
+                    index_elements = _UPDATE_KEY_MAP.get(result_key, ['id'])
+                    DatabaseHelper.update_df(self._db_connection, df, table_name, index_elements, self._logger)
             else:
                 # List of DTOs (INSERT only)
                 if data:
                     df = pd.DataFrame([d.to_db_row() for d in data])
-                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger)
+                    # safety_factors are generated once per semester — skip if already present
+                    on_conflict = (result_key in ('safety_factors', 'class_availabilities', 'bid_predictions'))
+                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
+                                             on_conflict_do_nothing=on_conflict)
 
         try:
             self._db_connection.commit()

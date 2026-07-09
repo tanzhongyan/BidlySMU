@@ -2,6 +2,14 @@
 # LAMBDA FUNCTION (Container Image)
 # =============================================================================
 
+# Trigger to force Lambda to pull the latest container image
+# Change lambda_deploy_id in tfvars to any new value (e.g., a timestamp or git SHA)
+resource "terraform_data" "lambda_deploy_trigger" {
+  triggers_replace = {
+    deploy_id = var.lambda_deploy_id
+  }
+}
+
 # CloudWatch Log Group for Lambda
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/${var.project_name}-scheduler"
@@ -46,6 +54,10 @@ resource "aws_lambda_function" "scheduler" {
     aws_iam_role_policy_attachment.lambda_secrets,
     aws_iam_role_policy_attachment.lambda_scheduler,
   ]
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.lambda_deploy_trigger]
+  }
 
   tags = {
     Name = "${var.project_name}-scheduler"

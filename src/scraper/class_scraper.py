@@ -120,7 +120,8 @@ class ClassScraper(AbstractScraper):
         # Login if authenticator provided
         if authenticator:
             try:
-                authenticator.login(target_driver)
+                target_driver = authenticator.login(target_driver)
+                self.connect(target_driver)
             except Exception as e:
                 result = ScrapingResult(
                     ay_term=acad_term_id or "unknown",
@@ -159,7 +160,10 @@ class ClassScraper(AbstractScraper):
         if schedule and app_config.CURRENT_WINDOW_NAME:
             for entry in schedule:
                 results_date, window_name, abbrev = entry[0], entry[1], entry[2]
-                if window_name == app_config.CURRENT_WINDOW_NAME:
+                # Match against both raw title (BOSS-prefixed legacy) and
+                # clean format ("Round 1A Window 1") from abbrev_window_to_full.
+                if (window_name == app_config.CURRENT_WINDOW_NAME or
+                    app_config.abbrev_window_to_full(abbrev) == app_config.CURRENT_WINDOW_NAME):
                     round_folder = f"{schedule_key}_{abbrev}"
                     break
 

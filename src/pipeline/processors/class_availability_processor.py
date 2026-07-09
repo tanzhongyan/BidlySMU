@@ -70,10 +70,12 @@ class ClassAvailabilityProcessor:
         # "R1W1" -> "Round 1 Window 1", "R1AW2" -> "Round 1A Window 2"
         full_format = abbrev_window_to_full(current_window_name)
 
-        # Match against both formats
+        # Match against current, full, and legacy BOSS-prefixed formats
+        boss_format = f"BOSS {full_format}"
         filtered = self._raw_data[
             (self._raw_data['bidding_window'] == current_window_name) |
-            (self._raw_data['bidding_window'] == full_format)
+            (self._raw_data['bidding_window'] == full_format) |
+            (self._raw_data['bidding_window'] == boss_format)
         ].copy()
 
         self._logger.info(f"Window filter: '{current_window_name}' / '{full_format}' matched {len(filtered)} of {original_count} rows")

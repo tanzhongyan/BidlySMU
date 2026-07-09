@@ -624,19 +624,20 @@ class HTMLDataExtractor(AbstractScraper):
             return None
 
     def _extract_bidding_window_from_folder(self, folder_name: str) -> str:
-        """Extract bidding window from folder name using BIDDING_SCHEDULES."""
+        """Extract bidding window from folder name using BIDDING_SCHEDULES.
+
+        Returns clean format (e.g., "Round 1A Window 1") without BOSS prefix.
+        """
         round_part = folder_name.split('_')[-1]
 
-        from src.config import BIDDING_SCHEDULES, START_AY_TERM
+        from src.config import BIDDING_SCHEDULES, START_AY_TERM, abbrev_window_to_full
         schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
         for entry in schedule:
-            if len(entry) >= 3:
-                window_name = entry[1]
-                abbrev = entry[2]
-                if abbrev == round_part:
-                    return window_name
+            if len(entry) >= 3 and entry[2] == round_part:
+                return abbrev_window_to_full(entry[2])
 
-        return round_part  # fallback
+        # Fallback: try direct conversion of the folder suffix
+        return abbrev_window_to_full(round_part)
 
     def _get_current_academic_term(self) -> Optional[str]:
         """

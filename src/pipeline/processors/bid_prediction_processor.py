@@ -64,9 +64,24 @@ class BidPredictionProcessor:
         return self._predictions
 
     def _filter_to_current_window(self, current_window_name: str) -> pd.DataFrame:
-        """Filter raw_data to current window records. Reference: ClassAvailabilityProcessor._filter_to_current_window."""
+        """Filter raw_data to current window records.
+
+        Handles multiple formats for backward compatibility:
+        - Clean: "Round 1A Window 1" (current)
+        - BOSS-prefixed: "BOSS Round 1A Window 1" (legacy)
+        - Abbrev: "R1AW1"
+        """
+        from src.config import abbrev_window_to_full
+
+        # Build set of all possible formats for this window
+        candidates = {current_window_name}
+        full_format = abbrev_window_to_full(current_window_name)
+        candidates.add(full_format)
+        # Also match the legacy BOSS-prefixed format
+        candidates.add(f"BOSS {full_format}")
+
         window_data = self._raw_data[
-            self._raw_data['bidding_window'] == current_window_name
+            self._raw_data['bidding_window'].isin(candidates)
         ].copy()
         return window_data
 
@@ -198,30 +213,69 @@ class BidPredictionProcessor:
         ]]
 
     def _clean_prediction_data(self, prediction_data: pd.DataFrame) -> pd.DataFrame:
-        """Clean prediction data by filling NaN/None values."""
-        # Replace None with 'Unknown' for object columns and 0 for numeric
+        """Fill NaN/None values and ensure correct dtypes for CatBoost.
+
+        CatBoost requires categorical features to be string or integer — float
+        and NaN values are rejected.  Categorical columns are resolved from the
+        transformer (or a hardcoded fallback) and converted to string before the
+        numeric-detection pass runs, so that purely-numeric category values
+        (e.g. section '1') are not silently converted to floats.
+        """
+        # Resolve which columns are categorical
+        cat_col_names: set = set()
+        if self._transformer is not None:
+            try:
+                cat_col_names = set(self._transformer.get_categorical_features())
+            except Exception:
+                pass
+        if not cat_col_names:
+            cat_col_names = {
+                'subject_area', 'catalogue_no', 'round', 'term',
+                'start_time', 'course_name', 'section', 'instructor',
+            }
+        cat_col_names &= set(prediction_data.columns)
+
+        # Convert categorical columns to string first — they must not be
+        # touched by the numeric-detection pass below.
+        for col in cat_col_names:
+            prediction_data[col] = (
+                prediction_data[col]
+                .astype(str)
+                .replace('None', 'Unknown')
+                .replace('nan', 'Unknown')
+            )
+
+        # Fill NaN/None in all columns: 'Unknown' for object, 0 for numeric
         for col in prediction_data.columns:
             if prediction_data[col].isnull().sum() > 0 or prediction_data[col].dtype == 'object':
                 if prediction_data[col].dtype == 'object':
                     prediction_data[col] = prediction_data[col].fillna('Unknown')
-                    # Also replace None strings
                     prediction_data[col] = prediction_data[col].replace('None', 'Unknown')
                 else:
                     prediction_data[col] = prediction_data[col].fillna(0)
 
+        # Convert object columns that are actually numeric (e.g. 'window').
+        # Categorical columns are skipped — they stay as strings.
         for col in prediction_data.columns:
+            if col in cat_col_names:
+                continue
             if prediction_data[col].dtype == 'object':
                 try:
                     numeric_version = pd.to_numeric(prediction_data[col], errors='coerce')
                     if not numeric_version.isnull().all():
                         prediction_data[col] = numeric_version.fillna(0)
-                except:
+                except Exception:
                     pass
 
-        # Final pass to ensure no None values remain
+        # Final pass: any lingering object columns become clean strings
         for col in prediction_data.columns:
             if prediction_data[col].dtype == 'object':
-                prediction_data[col] = prediction_data[col].astype(str).replace('None', 'Unknown').replace('nan', 'Unknown')
+                prediction_data[col] = (
+                    prediction_data[col]
+                    .astype(str)
+                    .replace('None', 'Unknown')
+                    .replace('nan', 'Unknown')
+                )
 
         return prediction_data
 

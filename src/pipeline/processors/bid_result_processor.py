@@ -201,9 +201,12 @@ class BidResultProcessor:
         # Convert abbrev to full format for matching ("R1W1" -> "Round 1 Window 1")
         full_format = abbrev_window_to_full(current_window_name)
 
+        # Match against current, full, and legacy BOSS-prefixed formats
+        boss_format = f"BOSS {full_format}"
         current_window_data = self._raw_data[
             (self._raw_data['bidding_window'] == current_window_name) |
-            (self._raw_data['bidding_window'] == full_format)
+            (self._raw_data['bidding_window'] == full_format) |
+            (self._raw_data['bidding_window'] == boss_format)
         ].copy()
 
         if 'acad_term_id' in current_window_data.columns and self._expected_acad_term_id:

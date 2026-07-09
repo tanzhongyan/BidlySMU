@@ -4,8 +4,8 @@
   "executionRoleArn": "arn:aws:iam::ACCOUNT:role/BidlySMUExecutionRole",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "1024",
-  "memory": "2048",
+  "cpu": "2048",
+  "memory": "4096",
   "ephemeralStorage": {
     "sizeInGiB": 30
   },
