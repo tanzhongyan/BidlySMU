@@ -226,7 +226,10 @@ resource "aws_iam_policy" "lambda_scheduler" {
           "scheduler:ListSchedules",
           "scheduler:TagResource"
         ]
-        Resource = "arn:aws:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule/*/${var.project_name}-pipeline-*"
+        Resource = [
+          "arn:aws:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule/*/${var.project_name}-pipeline-*",
+          "arn:aws:scheduler:${var.aws_region}:${data.aws_caller_identity.current.account_id}:schedule/*/bidlysmu-pipeline-*"
+        ]
       },
       {
         Effect = "Allow"

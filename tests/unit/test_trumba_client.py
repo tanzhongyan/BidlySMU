@@ -166,14 +166,15 @@ class TestTrubaClientFetchEvents:
         assert result == [{"id": 1, "title": "Event 1"}]
 
     def test_fetch_events_includes_startdate(self, truba_config, mock_requests):
-        """fetch_events should include startdate parameter."""
+        """fetch_events should include startdate parameter (today minus 30-day lookback)."""
         with patch('src.scraper.trumba_client.datetime') as mock_dt:
             mock_dt.now.return_value = datetime(2026, 5, 18)
             client = TrubaClient(truba_config)
             client.fetch_events()
 
         call_args = mock_requests["get"].call_args
-        assert "startdate=20260518" in call_args[0][0]
+        # hardcoded 30-day lookback: 2026-05-18 minus 30 days = 2026-04-18
+        assert "startdate=20260418" in call_args[0][0]
 
     def test_fetch_events_includes_months(self, truba_config, mock_requests):
         """fetch_events should include months parameter from config."""

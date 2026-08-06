@@ -66,6 +66,11 @@ class OverallResultsScraper(AbstractScraper):
         'Median Bid', 'Min Bid', 'Instructor', 'School/Department'
     ]
 
+    # Columns that uniquely identify one class's Overall Results row for one
+    # bidding window. Used to dedupe scraped data against the existing term file
+    # so re-runs / resumed runs never duplicate a row (append-if-key-unique).
+    DEDUP_KEY_COLUMNS = ['Session', 'Bidding Window', 'Course Code', 'Section']
+
     _TERM_DISPLAY_MAP = TERM_DISPLAY_MAP  # Use from config
 
     def _transform_term_format(self, acad_term_id: str) -> str:
@@ -276,6 +281,10 @@ class OverallResultsScraper(AbstractScraper):
 
             if page_data:
                 all_data.extend(page_data)
+                # Checkpoint: persist each page as it is scraped (idempotent,
+                # key-based merge), so a crash mid-pagination keeps the pages
+                # already collected instead of losing them all.
+                self._save_to_excel(page_data, term, output_dir)
                 self._logger.info(f"Page {page_num}: Found {len(page_data)} records")
             else:
                 self._logger.warning(f"Page {page_num}: No data found")
@@ -667,7 +676,13 @@ class OverallResultsScraper(AbstractScraper):
         return f"{term}.xlsx"
 
     def _save_to_excel(self, data: List[dict], term: str, output_dir: str) -> None:
-        """Save data to Excel file."""
+        """Merge scraped data into the term's Excel file (idempotent upsert).
+
+        Rows are matched on DEDUP_KEY_COLUMNS: a freshly scraped row replaces an
+        existing row with the same key, and brand-new keys are appended — so a
+        partial or resumed run never duplicates a class's result, and only
+        genuinely new records grow the file.
+        """
         try:
             os.makedirs(output_dir, exist_ok=True)
 
@@ -679,9 +694,19 @@ class OverallResultsScraper(AbstractScraper):
 
             if os.path.exists(filepath):
                 existing_df = pd.read_excel(filepath, engine='openpyxl')
+                existing_df = existing_df.reindex(columns=self.DESIRED_COLUMNS)
+
                 combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                combined_df = combined_df.drop_duplicates().reset_index(drop=True)
-                self._logger.info(f"Combined {len(existing_df)} existing + {len(new_df)} new = {len(combined_df)} total")
+                # Upsert on the business key: keep='last' makes the freshly
+                # scraped row win over the stale existing one, and only keys not
+                # already present are appended.
+                combined_df = combined_df.drop_duplicates(
+                    subset=self.DEDUP_KEY_COLUMNS, keep='last'
+                ).reset_index(drop=True)
+                self._logger.info(
+                    f"Combined {len(existing_df)} existing + {len(new_df)} new = "
+                    f"{len(combined_df)} total (deduped by {self.DEDUP_KEY_COLUMNS})"
+                )
             else:
                 combined_df = new_df
 

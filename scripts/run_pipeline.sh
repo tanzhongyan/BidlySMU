@@ -67,7 +67,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from supabase import create_client
-from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY, ACAD_TERM_ID
 from src.logging.logger import get_logger
 
 logger = get_logger(__name__)
@@ -97,6 +97,27 @@ try:
             logger.info(f'Downloaded: {remote_path}')
 except Exception as e:
     logger.info(f'overallBossResults not found (will be created by scraper): {e}')
+
+# Download existing class HTML files for the current window (checkpoint/resume).
+# ClassScraper skips classes whose HTML file already exists and resumes after the
+# highest scraped class number, so previously scraped classes persist across ECS
+# runs via Storage (Step 1b uploads them).
+try:
+    window_code = os.environ.get('WINDOW_CODE', '')
+    if window_code and window_code != 'UNKNOWN':
+        remote_prefix = f'input/classTimingsFull/{ACAD_TERM_ID}/{window_code}'
+        files = supabase.storage.from_(bucket).list(remote_prefix)
+        local_dir = Path('script_input/classTimingsFull') / ACAD_TERM_ID / window_code
+        local_dir.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if f['name'].endswith('.html'):
+                remote_path = f'{remote_prefix}/{f["name"]}'
+                response = supabase.storage.from_(bucket).download(remote_path)
+                (local_dir / f['name']).write_bytes(response)
+                logger.info(f'Downloaded: {remote_path}')
+        logger.info(f'Downloaded {len(files)} existing class files from {remote_prefix}')
+except Exception as e:
+    logger.info(f'classTimingsFull not found (starting fresh): {e}')
 logger.info('Supabase Storage download completed')
 " 2>&1
 

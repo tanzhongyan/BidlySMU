@@ -138,6 +138,20 @@ class TestSafetyFactorDTO:
         assert dto.multiplier == 2.0
         assert dto.multiplier_type == 'theoretical'
 
+    def test_has_columns(self):
+        """SafetyFactorDTO must expose COLUMNS (PipelineCoordinator._write_csv uses it)."""
+        dto = SafetyFactorDTO(
+            acad_term_id='AY202526T1',
+            prediction_type='median',
+            beats_percentage=90,
+            multiplier=1.5,
+            multiplier_type='empirical'
+        )
+        # COLUMNS keys must line up with to_csv_row() so CSV headers match rows
+        assert set(dto.COLUMNS.keys()) == set(dto.to_csv_row().keys())
+        assert 'acad_term_id' in dto.COLUMNS
+        assert 'multiplier' in dto.COLUMNS
+
 
 class TestProcessWithCalculator:
     """Tests for process() with SafetyFactorCalculator."""

@@ -20,7 +20,7 @@ Usage:
 import re
 import requests
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Protocol
 
 from src.config import ROUND_ORDER, SGT, _parse_sgt, parse_bidding_window, build_window_abbrev
@@ -138,7 +138,9 @@ class TrubaClient:
             requests.RequestException: If HTTP request fails
         """
         today = datetime.now(SGT)
-        start_date = today.strftime("%Y%m%d")
+        # Look back 30 days so already-started windows in the current term
+        # (e.g. R1W1..R1CW3 before R1FW1) are captured, not just future ones.
+        start_date = (today - timedelta(days=30)).strftime("%Y%m%d")
 
         url = f"{self._config.api_url}?startdate={start_date}&months={self._config.months_ahead}"
 

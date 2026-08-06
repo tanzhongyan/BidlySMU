@@ -2,6 +2,7 @@
 Unit tests for OverallResultsScraper.
 """
 import pytest
+import pandas as pd
 from unittest.mock import Mock
 
 from src.scraper.overall_results_scraper import OverallResultsScraper, OverallResultsConfig
@@ -167,3 +168,68 @@ class TestOverallResultsScraperScrape:
 
         assert isinstance(result, ScrapingResult)
         assert result.files_saved == 10
+
+
+class TestSaveToExcelKeyDedup:
+    """_save_to_excel must append only rows whose key is unique (no duplication)."""
+
+    def _row(self, course, section, window, median='1.0'):
+        return {
+            'Term': '2026-27 Term 1',
+            'Session': 'Semester 1',
+            'Bidding Window': window,
+            'Course Code': course,
+            'Description': 'Some Course',
+            'Section': section,
+            'Vacancy': '10',
+            'Opening Vacancy': '10',
+            'Before Process Vacancy': '10',
+            'D.I.C.E': '-',
+            'After Process Vacancy': '8',
+            'Enrolled Students': '2',
+            'Median Bid': median,
+            'Min Bid': '1.0',
+            'Instructor': 'Prof A',
+            'School/Department': 'SOE'
+        }
+
+    def test_existing_key_replaced_new_key_appended(self, tmp_path):
+        """Re-scraping an existing key updates it; brand-new keys are appended once."""
+        config = OverallResultsConfig(bidding_schedules={}, start_ay_term='AY202627T1')
+        scraper = OverallResultsScraper(config=config)
+        output_dir = str(tmp_path)
+
+        # First (partial) run: two rows
+        scraper._save_to_excel([
+            self._row('ACC101', 'G1', 'Round 1 Window 1', '1.0'),
+            self._row('ACC102', 'G1', 'Round 1 Window 1', '2.0'),
+        ], 'AY202627T1', output_dir)
+
+        # Resumed run: ACC101 re-scraped (updated value) + one brand-new key
+        scraper._save_to_excel([
+            self._row('ACC101', 'G1', 'Round 1 Window 1', '1.5'),
+            self._row('ACC103', 'G1', 'Round 1 Window 1', '3.0'),
+        ], 'AY202627T1', output_dir)
+
+        df = pd.read_excel(tmp_path / 'AY202627T1.xlsx', engine='openpyxl')
+        assert len(df) == 3  # ACC101 is NOT duplicated
+        assert set(df['Course Code']) == {'ACC101', 'ACC102', 'ACC103'}
+        acc101 = df[df['Course Code'] == 'ACC101'].iloc[0]
+        assert float(acc101['Median Bid']) == 1.5  # fresh scrape wins over stale row
+
+    def test_same_key_different_windows_both_kept(self, tmp_path):
+        """Same course/section in different bidding windows never collide."""
+        config = OverallResultsConfig(bidding_schedules={}, start_ay_term='AY202627T1')
+        scraper = OverallResultsScraper(config=config)
+        output_dir = str(tmp_path)
+
+        scraper._save_to_excel([
+            self._row('ACC101', 'G1', 'Round 1 Window 1', '1.0'),
+        ], 'AY202627T1', output_dir)
+        scraper._save_to_excel([
+            self._row('ACC101', 'G1', 'Round 2 Window 1', '2.5'),
+        ], 'AY202627T1', output_dir)
+
+        df = pd.read_excel(tmp_path / 'AY202627T1.xlsx', engine='openpyxl')
+        assert len(df) == 2
+        assert set(df['Bidding Window']) == {'Round 1 Window 1', 'Round 2 Window 1'}

@@ -96,6 +96,14 @@ class BidPredictionDTO:
 class SafetyFactorDTO:
     """DTO representing a safety factor record."""
 
+    COLUMNS = {
+        'acad_term_id': 'acad_term_id',
+        'prediction_type': 'prediction_type',
+        'beats_percentage': 'beats_percentage',
+        'multiplier_type': 'multiplier_type',
+        'multiplier': 'multiplier',
+    }
+
     acad_term_id: str
     prediction_type: str
     beats_percentage: int

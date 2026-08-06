@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Optional
 import csv
 import os
+import re
 import time
 from pathlib import Path
 
@@ -57,6 +58,10 @@ class ClassScraperConfig:
     timeout: int = 30
     max_retries: int = 3
     headless: bool = True
+    # When True, resume from class HTML files already present in the output dir
+    # (the checkpoint): continue after the highest already-scraped class number
+    # instead of re-scanning the whole range.
+    resume_from_existing: bool = True
 
 
 class ClassScraper(AbstractScraper):
@@ -230,11 +235,30 @@ class ClassScraper(AbstractScraper):
         # Use precomputed ACAD_TERM_SHORT for URL construction
         acad_term_short = ACAD_TERM_SHORT
 
-        files_saved = 0
+        # Resume/checkpoint: HTML files already on disk (downloaded from Storage
+        # in Step 0, or left by a previous partial run) are the progress
+        # checkpoint. Start after the highest already-scraped class number so a
+        # crashed run can pick up where it left off instead of re-scanning.
+        existing = set()
+        if self._config.resume_from_existing and output_dir.is_dir():
+            pattern = f"SelectedAcadTerm={acad_term_short}&SelectedClassNumber=*.html"
+            for f in output_dir.glob(pattern):
+                m = re.search(r"SelectedClassNumber=(\d+)", f.name)
+                if m:
+                    existing.add(int(m.group(1)))
+
+        files_saved = len(existing)
         consecutive_empty = 0
+        start_class = self._config.min_class_number
+        if existing:
+            start_class = max(existing) + 1
+            self._logger.info(
+                f"Resuming scan from class {start_class} "
+                f"({len(existing)} classes already scraped in {output_dir.name})"
+            )
 
         self._logger.info(f"Performing full scan for {ay_term}.")
-        for class_num in range(self._config.min_class_number, self._config.max_class_number + 1):
+        for class_num in range(start_class, self._config.max_class_number + 1):
             try:
                 saved = self._scrape_single_class(
                     driver,
@@ -243,7 +267,10 @@ class ClassScraper(AbstractScraper):
                     class_num,
                 )
 
-                if saved is None:  # Error
+                if saved is None:  # Error - can't scrape anymore
+                    self._logger.warning(
+                        f"Stopping scan at class {class_num} - will resume from here on next run."
+                    )
                     break
                 elif not saved:  # Empty
                     consecutive_empty += 1
@@ -276,7 +303,7 @@ class ClassScraper(AbstractScraper):
             class_num: Class number to scrape
 
         Returns:
-            True if saved, False if empty, None if error
+            True if saved, False if empty, None if error (after max_retries attempts)
         """
         filename = f"SelectedAcadTerm={acad_term_short}&SelectedClassNumber={class_num:04}.html"
         filepath = output_dir / filename
@@ -288,41 +315,52 @@ class ClassScraper(AbstractScraper):
             f"&SelectedAcadCareer=UGRD"
         )
 
-        try:
-            driver.get(url)
-
-            # Wait for content with smart wait (handles stale elements)
+        # Retry transient errors (network blips, session hiccups) up to
+        # max_retries before giving up, so a single error doesn't kill the whole
+        # scan while BOSS is still reachable. Only after all attempts fail do we
+        # return None ("can't scrape anymore") and let _scrape_range stop.
+        for attempt in range(1, self._config.max_retries + 1):
             try:
-                self.wait_for_any_of(
-                    EC.visibility_of_element_located((By.ID, "RadGrid_MeetingInfo_ctl00")),
-                    EC.presence_of_element_located((By.ID, "lblErrorDetails")),
-                    timeout=10,
-                )
-            except StaleElementError:
-                self._logger.warning(f"Stale element at class {class_num}, retrying...")
-                time.sleep(1)
                 driver.get(url)
-                self.wait_for_any_of(
-                    EC.visibility_of_element_located((By.ID, "RadGrid_MeetingInfo_ctl00")),
-                    EC.presence_of_element_located((By.ID, "lblErrorDetails")),
-                    timeout=10,
+
+                # Wait for content with smart wait (handles stale elements)
+                try:
+                    self.wait_for_any_of(
+                        EC.visibility_of_element_located((By.ID, "RadGrid_MeetingInfo_ctl00")),
+                        EC.presence_of_element_located((By.ID, "lblErrorDetails")),
+                        timeout=10,
+                    )
+                except StaleElementError:
+                    self._logger.warning(f"Stale element at class {class_num}, retrying...")
+                    time.sleep(1)
+                    driver.get(url)
+                    self.wait_for_any_of(
+                        EC.visibility_of_element_located((By.ID, "RadGrid_MeetingInfo_ctl00")),
+                        EC.presence_of_element_located((By.ID, "lblErrorDetails")),
+                        timeout=10,
+                    )
+
+                page_source = driver.page_source
+
+                if "No record found" in page_source:
+                    return False
+
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(page_source)
+
+                time.sleep(self._config.delay_between_requests)
+                return True
+
+            except Exception as e:
+                self._logger.error(
+                    f"Error processing {url} (attempt {attempt}/{self._config.max_retries}): {e}"
                 )
+                time.sleep(5)
 
-            page_source = driver.page_source
-
-            if "No record found" in page_source:
-                return False
-
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(page_source)
-
-            time.sleep(self._config.delay_between_requests)
-            return True
-
-        except Exception as e:
-            self._logger.error(f"Error processing {url}: {e}")
-            time.sleep(5)
-            return None
+        self._logger.error(
+            f"Giving up on class {class_num} after {self._config.max_retries} attempts."
+        )
+        return None
 
     def generate_scraped_filepaths_csv(
         self,

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from datetime import datetime
 
 from src.scraper.class_scraper import ClassScraper, ClassScraperConfig
+from src.config import ACAD_TERM_SHORT
 
 
 class TestClassScraperConfig:
@@ -288,6 +289,44 @@ class TestScrapeRange:
         # Should stop at None (error)
         assert files_saved == 0
         assert scraper._scrape_single_class.call_count == 3
+
+    def test_resumes_after_existing_files(self, mock_webdriver, mock_logger, tmp_path):
+        """_scrape_range should resume after the highest existing class number (checkpoint)."""
+        config = ClassScraperConfig(bidding_schedules={})
+        scraper = ClassScraper(config=config, driver=mock_webdriver, logger=mock_logger)
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Pre-existing scraped files (checkpoint from a previous run): classes 1000-1004
+        for n in range(1000, 1005):
+            (output_dir / f"SelectedAcadTerm={ACAD_TERM_SHORT}&SelectedClassNumber={n}.html").write_text("<html>")
+
+        # Mock: returns False (empty) - should only be called AFTER the checkpoint
+        scraper._scrape_single_class = Mock(return_value=False)
+
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
+
+        # Existing files count as saved; first scraped class is 1005
+        assert files_saved == 5
+        assert scraper._scrape_single_class.call_args_list[0][0][3] == 1005
+
+    def test_resume_disabled_scans_from_min(self, mock_webdriver, mock_logger, tmp_path):
+        """_scrape_range should scan from min_class_number when resume_from_existing=False."""
+        config = ClassScraperConfig(bidding_schedules={}, resume_from_existing=False)
+        scraper = ClassScraper(config=config, driver=mock_webdriver, logger=mock_logger)
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        (output_dir / f"SelectedAcadTerm={ACAD_TERM_SHORT}&SelectedClassNumber=1000.html").write_text("<html>")
+
+        scraper._scrape_single_class = Mock(return_value=False)
+
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
+
+        # Existing file NOT counted; first call is min_class_number (1000)
+        assert files_saved == 0
+        assert scraper._scrape_single_class.call_args_list[0][0][3] == 1000
 
 
 class TestScrapeMethod:
