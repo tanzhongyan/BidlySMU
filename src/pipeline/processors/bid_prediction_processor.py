@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from src.pipeline.dtos.bid_prediction_dto import BidPredictionDTO
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
-from src.config import parse_bidding_window
+from src.config import parse_bidding_window, abbrev_window_to_full
 
 
 class BidPredictionProcessor:
@@ -21,8 +21,6 @@ class BidPredictionProcessor:
         class_lookup: Dict[Tuple, 'ClassDTO'],
         bid_window_lookup: Dict[Tuple, 'BidWindowDTO'],
         multiple_lookup: Dict[str, List[dict]],
-        bidding_schedule: List[Tuple] = None,
-        expected_acad_term_id: str = None,
         model_dir: str = 'models',
         model_version: str = 'v4.0',
         logger: Optional[object] = None
@@ -31,8 +29,6 @@ class BidPredictionProcessor:
         self._class_lookup = class_lookup
         self._bid_window_lookup = bid_window_lookup
         self._multiple_lookup = multiple_lookup
-        self._bidding_schedule = bidding_schedule or []
-        self._expected_acad_term_id = expected_acad_term_id
         self._model_dir = model_dir
         self._model_version = model_version
         self._logger = logger
@@ -66,24 +62,23 @@ class BidPredictionProcessor:
     def _filter_to_current_window(self, current_window_name: str) -> pd.DataFrame:
         """Filter raw_data to current window records.
 
-        Handles multiple formats for backward compatibility:
+        Handles three formats:
         - Clean: "Round 1A Window 1" (current)
-        - BOSS-prefixed: "BOSS Round 1A Window 1" (legacy)
         - Abbrev: "R1AW1"
+        - BOSS-prefixed: "BOSS Round 1A Window 1" (legacy scraper output)
         """
-        from src.config import abbrev_window_to_full
+        if self._raw_data is None or self._raw_data.empty:
+            return self._raw_data
+        if 'bidding_window' not in self._raw_data.columns:
+            return self._raw_data
 
-        # Build set of all possible formats for this window
-        candidates = {current_window_name}
         full_format = abbrev_window_to_full(current_window_name)
-        candidates.add(full_format)
-        # Also match the legacy BOSS-prefixed format
-        candidates.add(f"BOSS {full_format}")
-
-        window_data = self._raw_data[
-            self._raw_data['bidding_window'].isin(candidates)
+        boss_format = f"BOSS {full_format}"
+        return self._raw_data[
+            (self._raw_data['bidding_window'] == current_window_name) |
+            (self._raw_data['bidding_window'] == full_format) |
+            (self._raw_data['bidding_window'] == boss_format)
         ].copy()
-        return window_data
 
     def _get_instructor_map(self) -> Dict[str, List[str]]:
         """Build record_key -> [professor_names] from multiple_lookup."""
@@ -175,6 +170,11 @@ class BidPredictionProcessor:
 
         clf_pred = self._models['classification'].predict(prediction_data)
         clf_proba = self._models['classification'].predict_proba(prediction_data)
+        # One-class training sets yield a single probability column; expand to
+        # [negative, positive] so downstream confidence/entropy code and the
+        # ``clf_proba[idx, 1]`` pick never hit a missing column.
+        if clf_proba.ndim == 2 and clf_proba.shape[1] == 1:
+            clf_proba = np.column_stack([1.0 - clf_proba[:, 0], clf_proba[:, 0]])
         median_pred = self._models['median'].predict(prediction_data)
         min_pred = self._models['min'].predict(prediction_data)
 
@@ -307,7 +307,18 @@ class BidPredictionProcessor:
                     )
                     subset_predictions.append(partial_pred)
 
-            uncertainties[model_name] = np.std(subset_predictions, axis=0)
+            if subset_predictions:
+                uncertainties[model_name] = np.std(subset_predictions, axis=0)
+            else:
+                # Degenerate model (tree_count_ == 0) — emit zero uncertainty
+                # instead of crashing on np.std([]).
+                if self._logger:
+                    self._logger.warning(
+                        f"Model '{model_name}' produced no tree subsets "
+                        f"(tree_count_={n_trees}); uncertainty set to 0 for "
+                        f"{len(prediction_data)} rows"
+                    )
+                uncertainties[model_name] = np.zeros(len(prediction_data))
 
         return uncertainties
 
@@ -326,10 +337,9 @@ class BidPredictionProcessor:
             return []
 
         class_ids = []
-        for (term_id, boss_id, professor_id), class_dto in self._class_lookup.items():
+        for (term_id, boss_id, _professor_id), class_dto in self._class_lookup.items():
             if term_id == acad_term_id and boss_id == class_boss_id:
                 class_ids.append(class_dto.id)
-
         return class_ids
 
     def _get_bid_window_id_for_row(self, idx: int) -> Optional[int]:

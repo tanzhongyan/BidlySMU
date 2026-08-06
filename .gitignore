@@ -27,3 +27,9 @@ script_output/
 *.tfplan
 .terraformrc
 terraform.rc
+# Scoped guards for working Terraform state/vars (untracked, never commit)
+deploy/terraform/*.tfvars
+deploy/terraform/*.tfstate*
+
+# Model / cache artifacts (never commit)
+*.pkl

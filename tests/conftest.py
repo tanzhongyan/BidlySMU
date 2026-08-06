@@ -100,7 +100,7 @@ def mock_requests():
 def sample_bidding_schedules():
     """Sample bidding_schedules.json data."""
     return {
-        "2026-27_T1": [
+        "AY202627T1": [
             ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1"],
             ["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"]
         ]

@@ -15,24 +15,22 @@ class TestClassExamTimingProcessor:
     def test_requires_raw_data(self):
         """Processor should require raw_data parameter."""
         processor = ClassExamTimingProcessor(
-            raw_data=pd.DataFrame(),
-            class_lookup={}
+            raw_data=pd.DataFrame()
         )
         assert processor._raw_data is not None
 
-    def test_initializes_with_empty_class_lookup(self):
-        """Processor should initialize with empty class_lookup when not provided."""
+    def test_initializes_with_empty_lookups(self):
+        """Processor should initialize with empty lookups when not provided."""
         processor = ClassExamTimingProcessor(
-            raw_data=pd.DataFrame(),
-            class_lookup={}
+            raw_data=pd.DataFrame()
         )
-        assert processor._class_lookup == {}
+        assert processor._record_key_to_class_ids == {}
+        assert processor._processed_exam_class_ids == set()
 
     def test_process_returns_list(self):
         """process() should return a list of ClassExamTimingDTOs."""
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup={},
             logger=Mock()
         )
         result = processor.process()
@@ -42,7 +40,6 @@ class TestClassExamTimingProcessor:
         """process() should return empty list when raw_data is empty."""
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup={},
             logger=Mock()
         )
         result = processor.process()
@@ -67,7 +64,6 @@ class TestProcessAllRows:
 
         processor = ClassExamTimingProcessor(
             raw_data=raw_data,
-            class_lookup={},
             record_key_to_class_ids=record_key_map,
             logger=Mock()
         )
@@ -84,8 +80,7 @@ class TestFindClassIds:
     def test_returns_empty_when_no_record_key(self):
         """_find_class_ids should return empty list when record_key is None."""
         processor = ClassExamTimingProcessor(
-            raw_data=pd.DataFrame(),
-            class_lookup={}
+            raw_data=pd.DataFrame()
         )
 
         result = processor._find_class_ids(None)
@@ -94,8 +89,7 @@ class TestFindClassIds:
     def test_returns_empty_when_record_key_is_nan(self):
         """_find_class_ids should return empty list when record_key is NaN."""
         processor = ClassExamTimingProcessor(
-            raw_data=pd.DataFrame(),
-            class_lookup={}
+            raw_data=pd.DataFrame()
         )
 
         result = processor._find_class_ids(float('nan'))
@@ -109,7 +103,6 @@ class TestFindClassIds:
 
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup={},
             record_key_to_class_ids=record_key_map
         )
 
@@ -127,7 +120,6 @@ class TestFindClassIds:
 
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup={},
             record_key_to_class_ids=record_key_map
         )
 
@@ -151,7 +143,6 @@ class TestProcessExamTiming:
 
         processor = ClassExamTimingProcessor(
             raw_data=raw_data,
-            class_lookup={},
             record_key_to_class_ids=record_key_map,
             processed_exam_class_ids=processed_ids,
             logger=Mock()
@@ -220,7 +211,6 @@ class TestClassExamTimingDTO:
         }
         processor = ClassExamTimingProcessor(
             raw_data=pd.DataFrame(),
-            class_lookup={},
             record_key_to_class_ids=record_key_map,
             processed_exam_class_ids=processed_ids,
             logger=Mock()

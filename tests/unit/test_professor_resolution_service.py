@@ -162,8 +162,13 @@ class TestResolveProfessorName:
 
     # --- Strategy 2: Variation lookup ---
 
-    def test_strategy2_comma_variation(self, service_with_cache):
-        """Strategy 2: 'LAST, FIRST' variation should match 'FIRST LAST'."""
+    def test_comma_last_first_variation_resolves(self, service_with_cache):
+        """'LAST, FIRST' input should resolve to the professor.
+
+        NOTE: 'SMITH, JOHN' is not a direct/variation lookup key (lookups are
+        keyed 'FIRST LAST'), so this resolves via Strategy 5 (subset matching),
+        not Strategy 2 (variation lookup).
+        """
         result = service_with_cache.resolve_professor_name("SMITH, JOHN")
         assert result == 'prof-1'
 
@@ -550,7 +555,7 @@ class TestResolveProfessorIds:
 # ============================================================================
 
 class TestParseBossAliasesSet:
-    """Tests for boss_aliases parsing in the resolution service."""
+    """_parse_boss_aliases_set must handle every type the parquet cache can produce."""
 
     def test_parses_list(self, service_with_cache):
         """Should parse list of aliases."""
@@ -589,3 +594,35 @@ class TestParseBossAliasesSet:
         """Should strip whitespace from parsed aliases."""
         result = service_with_cache._parse_boss_aliases_set(["  JOHN SMITH  "])
         assert "JOHN SMITH" in result
+
+    def test_none_returns_empty(self, empty_service):
+        assert empty_service._parse_boss_aliases_set(None) == set()
+
+    def test_list_returns_uppercased(self, empty_service):
+        assert empty_service._parse_boss_aliases_set(['j. smith', 'JOHN SMITH']) == {'J. SMITH', 'JOHN SMITH'}
+
+    def test_empty_list_returns_empty(self, empty_service):
+        assert empty_service._parse_boss_aliases_set([]) == set()
+
+    def test_json_string(self, empty_service):
+        assert empty_service._parse_boss_aliases_set('["JOHN SMITH", "J. SMITH"]') == {'JOHN SMITH', 'J. SMITH'}
+
+    def test_set_literal_string(self, empty_service):
+        assert empty_service._parse_boss_aliases_set('{"JOHN SMITH", "J. SMITH"}') == {'JOHN SMITH', 'J. SMITH'}
+
+    def test_plain_string_is_single_alias(self, empty_service):
+        assert empty_service._parse_boss_aliases_set('john smith') == {'JOHN SMITH'}
+
+    def test_numpy_array_does_not_raise(self, empty_service):
+        import numpy as np
+        arr = np.array(['JOHN SMITH', 'J. SMITH'])
+        assert empty_service._parse_boss_aliases_set(arr) == {'JOHN SMITH', 'J. SMITH'}
+
+    def test_pandas_series_does_not_raise(self, empty_service):
+        import pandas as pd
+        series = pd.Series(['JOHN SMITH', 'J. SMITH'])
+        assert empty_service._parse_boss_aliases_set(series) == {'JOHN SMITH', 'J. SMITH'}
+
+    def test_numpy_nan_returns_empty(self, empty_service):
+        import numpy as np
+        assert empty_service._parse_boss_aliases_set(np.float64(np.nan)) == set()

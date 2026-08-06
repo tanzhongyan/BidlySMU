@@ -3,50 +3,29 @@ Tests for centralized formatting functions in src/config.py.
 """
 import pytest
 from src.config import (
-    dash_format_to_acad_term_id,
-    acad_term_id_to_dash_format,
     abbrev_window_to_full,
     build_window_abbrev,
-    dash_format_to_display_format,
     strip_term_prefix,
     encode_subterm_for_boss_id,
+    acad_term_id_to_short,
     ROUND_ORDER,
 )
 
 
-class TestDashFormatToAcadTermId:
-    """Tests for dash_format_to_acad_term_id."""
+class TestAcadTermIdToShort:
+    """Tests for acad_term_id_to_short (BOSS ClassDetails URL param)."""
 
-    def test_basic_conversion(self):
-        assert dash_format_to_acad_term_id('2026-27_T1') == 'AY202627T1'
+    def test_term_1(self):
+        assert acad_term_id_to_short('AY202627T1') == '2610'
 
-    def test_with_subterm(self):
-        assert dash_format_to_acad_term_id('2025-26_T3A') == 'AY202526T3A'
+    def test_term_2(self):
+        assert acad_term_id_to_short('AY202526T2') == '2520'
 
-    def test_with_term_b(self):
-        assert dash_format_to_acad_term_id('2025-26_T3B') == 'AY202526T3B'
+    def test_term_3a(self):
+        assert acad_term_id_to_short('AY202526T3A') == '2531'
 
-    def test_with_term_2(self):
-        assert dash_format_to_acad_term_id('2025-26_T2') == 'AY202526T2'
-
-
-class TestAcadTermIdToDashFormat:
-    """Tests for acad_term_id_to_dash_format."""
-
-    def test_basic_conversion(self):
-        assert acad_term_id_to_dash_format('AY202627T1') == '2026-27_T1'
-
-    def test_with_subterm(self):
-        assert acad_term_id_to_dash_format('AY202526T3A') == '2025-26_T3A'
-
-    def test_short_input_returns_unchanged(self):
-        assert acad_term_id_to_dash_format('AY2026') == 'AY2026'
-
-    def test_empty_input(self):
-        assert acad_term_id_to_dash_format('') == ''
-
-    def test_none_input(self):
-        assert acad_term_id_to_dash_format(None) == None
+    def test_term_3b(self):
+        assert acad_term_id_to_short('AY202526T3B') == '2532'
 
 
 class TestAbbrevWindowToFull:
@@ -91,22 +70,6 @@ class TestBuildWindowAbbrev:
 
     def test_round_2a(self):
         assert build_window_abbrev('2A', 3) == 'R2AW3'
-
-
-class TestDashFormatToDisplayFormat:
-    """Tests for dash_format_to_display_format."""
-
-    def test_term_1(self):
-        assert dash_format_to_display_format('2026-27_T1') == '2026-27 Term 1'
-
-    def test_term_3a(self):
-        assert dash_format_to_display_format('2025-26_T3A') == '2025-26 Term 3A'
-
-    def test_term_3b(self):
-        assert dash_format_to_display_format('2025-26_T3B') == '2025-26 Term 3B'
-
-    def test_term_2(self):
-        assert dash_format_to_display_format('2025-26_T2') == '2025-26 Term 2'
 
 
 class TestStripTermPrefix:

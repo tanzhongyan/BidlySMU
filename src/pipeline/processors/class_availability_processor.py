@@ -10,9 +10,10 @@ from src.config import CURRENT_WINDOW_NAME, parse_bidding_window, abbrev_window_
 from src.pipeline.dtos.class_availability_dto import ClassAvailabilityDTO
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 
 
-class ClassAvailabilityProcessor:
+class ClassAvailabilityProcessor(AbstractProcessor):
     """Processes class availability records from standalone data."""
 
     def __init__(
@@ -21,7 +22,6 @@ class ClassAvailabilityProcessor:
         class_lookup: Dict[Tuple, 'ClassDTO'],
         bid_window_lookup: Dict[Tuple, 'BidWindowDTO'],
         existing_availability_keys: Set[Tuple] = None,
-        bidding_schedule: List[Tuple] = None,
         expected_acad_term_id: str = None,
         logger: Optional[object] = None
     ):
@@ -29,9 +29,8 @@ class ClassAvailabilityProcessor:
         self._class_lookup = class_lookup
         self._bid_window_lookup = bid_window_lookup
         self._existing_availability_keys = existing_availability_keys or set()
-        self._bidding_schedule = bidding_schedule or []
         self._expected_acad_term_id = expected_acad_term_id
-        self._logger = logger
+        super().__init__(logger)
         self._new_availability: List['ClassAvailabilityDTO'] = []
 
     def process(self) -> List['ClassAvailabilityDTO']:
@@ -70,20 +69,17 @@ class ClassAvailabilityProcessor:
         # "R1W1" -> "Round 1 Window 1", "R1AW2" -> "Round 1A Window 2"
         full_format = abbrev_window_to_full(current_window_name)
 
-        # Match against current, full, and legacy BOSS-prefixed formats
+        # Match against current, full, and legacy BOSS-prefixed formats + term filter
         boss_format = f"BOSS {full_format}"
         filtered = self._raw_data[
             (self._raw_data['bidding_window'] == current_window_name) |
             (self._raw_data['bidding_window'] == full_format) |
             (self._raw_data['bidding_window'] == boss_format)
         ].copy()
+        if 'acad_term_id' in filtered.columns and self._expected_acad_term_id:
+            filtered = filtered[filtered['acad_term_id'] == self._expected_acad_term_id]
 
         self._logger.info(f"Window filter: '{current_window_name}' / '{full_format}' matched {len(filtered)} of {original_count} rows")
-
-        if 'acad_term_id' in filtered.columns and self._expected_acad_term_id:
-            before_term_filter = len(filtered)
-            filtered = filtered[filtered['acad_term_id'] == self._expected_acad_term_id]
-            self._logger.info(f"Term filter: {before_term_filter} -> {len(filtered)} rows for {self._expected_acad_term_id}")
 
         return filtered
 
@@ -115,10 +111,18 @@ class ClassAvailabilityProcessor:
             if not bid_window_dto:
                 continue
 
-            total_val = int(row.get('total')) if pd.notna(row.get('total')) else 0
-            current_enrolled_val = int(row.get('current_enrolled')) if pd.notna(row.get('current_enrolled')) else 0
-            reserved_val = int(row.get('reserved')) if pd.notna(row.get('reserved')) else 0
-            available_val = int(row.get('available')) if pd.notna(row.get('available')) else 0
+            total_val = AbstractProcessor.safe_int(row.get('total'))
+            if total_val is None:
+                total_val = 0
+            current_enrolled_val = AbstractProcessor.safe_int(row.get('current_enrolled'))
+            if current_enrolled_val is None:
+                current_enrolled_val = 0
+            reserved_val = AbstractProcessor.safe_int(row.get('reserved'))
+            if reserved_val is None:
+                reserved_val = 0
+            available_val = AbstractProcessor.safe_int(row.get('available'))
+            if available_val is None:
+                available_val = 0
 
             for class_id in class_ids:
                 availability_key = (class_id, bid_window_dto.id)
@@ -142,7 +146,7 @@ class ClassAvailabilityProcessor:
     def _find_all_class_ids(self, acad_term_id: str, class_boss_id) -> List[str]:
         """Find all class IDs for a given acad_term_id and boss_id."""
         class_ids = []
-        for (term_id, boss_id, professor_id), class_dto in self._class_lookup.items():
+        for (term_id, boss_id, _professor_id), class_dto in self._class_lookup.items():
             if term_id == acad_term_id and boss_id == class_boss_id:
                 class_ids.append(class_dto.id)
         return class_ids

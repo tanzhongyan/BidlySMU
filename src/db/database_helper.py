@@ -26,13 +26,36 @@ class DatabaseHelper:
             return None
 
     @staticmethod
-    def insert_df(connection, df, table_name, logger=None, on_conflict_do_nothing=False):
+    def cache_paths(cache_dir: str, base_filename: str) -> dict:
+        """Return the cache file paths for a base filename (parquet is the cache format; a pkl path is also returned so callers can remove leftover .pkl files)."""
+        return {
+            'parquet': os.path.join(cache_dir, f'{base_filename}.parquet'),
+            'pkl': os.path.join(cache_dir, f'{base_filename}.pkl'),
+        }
+
+    @staticmethod
+    def read_cache(cache_dir: str, base_filename: str, logger=None):
+        """Read a cached table from disk (parquet only).
+
+        Returns the DataFrame, or None if no cache file exists. Parquet is the
+        only cache format; .pkl files are not read.
+        """
+        path = os.path.join(cache_dir, f'{base_filename}.parquet')
+        if os.path.exists(path):
+            return pd.read_parquet(path)
+        return None
+
+    @staticmethod
+    def insert_df(connection, df, table_name, logger=None, on_conflict_do_nothing=False, commit=True):
         """
         Bulk INSERT for a dataframe using psycopg2 execute_batch.
 
         Args:
             on_conflict_do_nothing: If True, appends ON CONFLICT DO NOTHING
                                     to skip rows that violate unique constraints.
+            commit: If True (default), commit immediately after the batch. Set to
+                    False when the caller manages a single transaction around
+                    multiple statements and commits once at the end.
         """
         if df.empty:
             return
@@ -87,11 +110,13 @@ class DatabaseHelper:
                     converted.append(to_native(row[col], col_name=col))
                 values.append(converted)
             execute_batch(cursor, sql_stub, values, page_size=1000)
-            connection.commit()  # Commit after successful batch
+            if commit:
+                connection.commit()  # Commit after successful batch
             if logger is not None:
                 logger.info(f"Queued {len(df)} records for INSERT into {table_name}.")
         except Exception as e:
-            connection.rollback()  # Rollback on error
+            if commit:
+                connection.rollback()  # Rollback on error (per-statement mode)
             if logger is not None:
                 logger.error(f"INSERT failed for {table_name}: {e}")
             raise
@@ -99,10 +124,15 @@ class DatabaseHelper:
             cursor.close()
 
     @staticmethod
-    def update_df(connection, df, table_name, index_elements, logger=None):
+    def update_df(connection, df, table_name, index_elements, logger=None, commit=True):
         """
         Bulk UPDATE for a dataframe using psycopg2 execute_batch.
         Supports composite keys via multiple index_elements.
+
+        Args:
+            commit: If True (default), commit immediately after the batch. Set to
+                    False when the caller manages a single transaction around
+                    multiple statements.
         """
         if df.empty:
             return
@@ -136,7 +166,8 @@ class DatabaseHelper:
                 params = [row[col] for col in update_cols] + [row[idx] for idx in index_elements]
                 param_sets.append(tuple(params))
             execute_batch(cursor, sql_stub, param_sets, page_size=1000)
-            connection.commit()
+            if commit:
+                connection.commit()
             if logger is not None:
                 logger.info(f"Queued {len(df)} records for UPDATE into {table_name}.")
         finally:
@@ -145,11 +176,14 @@ class DatabaseHelper:
     @staticmethod
     def download_cache(connection, cache_dir, tables, logger=None):
         """
-        Download tables from database to pickle cache files.
+        Download tables from database to parquet cache files.
+
+        Parquet is the only cache format; leftover .pkl files for the same table
+        are removed when present, so no unsafe pickle writes or stale pickle files remain.
 
         Args:
             connection: psycopg2 connection
-            cache_dir: Directory to save pickle files
+            cache_dir: Directory to save cache files
             tables: List of table names to download
             logger: Optional logger instance
         """
@@ -159,10 +193,13 @@ class DatabaseHelper:
             try:
                 query = f'SELECT * FROM "{table_name}"'
                 df = pd.read_sql_query(query, connection)
-                cache_path = os.path.join(cache_dir, f'{table_name}_cache.pkl')
-                df.to_pickle(cache_path)
+                paths = DatabaseHelper.cache_paths(cache_dir, f'{table_name}_cache')
+                df.to_parquet(paths['parquet'])
+                # Remove any leftover .pkl file to avoid stale pickle RCE surface
+                if os.path.exists(paths['pkl']):
+                    os.remove(paths['pkl'])
                 if logger is not None:
-                    logger.info(f"Cached {table_name}: {len(df)} rows")
+                    logger.info(f"Cached {table_name}: {len(df)} rows (parquet)")
             except Exception as e:
                 if logger is not None:
                     logger.error(f"Failed to cache {table_name}: {e}")

@@ -32,13 +32,26 @@ export PYTHONIOENCODING=utf-8
 # Consolidated logging to single logs/ directory at project root
 mkdir -p logs
 mkdir -p script_output
-rm -f script_output/_SUCCESS
+
+# Reset the local success/started markers. _SUCCESS is written only after ALL
+# steps succeed; _STARTED is written immediately so the Lambda's retry logic
+# can tell that this run is in progress (and avoid concurrent ECS tasks).
+rm -f script_output/_SUCCESS script_output/_STARTED
+touch script_output/_STARTED
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 echo "============================================================"
 echo "🚀 Starting SMU Data Pipeline at $(date)"
 echo "============================================================"
+
+# --- Canonical term/window identifiers ---
+# TARGET_CURRENT_WINDOW is the canonical ABBREV (e.g. R1FW4) passed by the
+# Lambda. It is used verbatim for marker/CSV/log paths so they line up with the
+# Lambda's output/{ACAD_TERM_ID}/{window}/_SUCCESS checks — no re-parsing.
+WINDOW_CODE="${TARGET_CURRENT_WINDOW:-UNKNOWN}"
+export WINDOW_CODE
+echo "Target window code: ${WINDOW_CODE}"
 
 # --- Step 0: Download files from Supabase Storage (if enabled) ---
 if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
@@ -62,15 +75,6 @@ logger.info('Supabase Storage download started')
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 bucket = 'bidlysmu-files'
-
-# Download bidding_schedules.json (from Lambda scheduler's Supabase path)
-try:
-    response = supabase.storage.from_(bucket).download('schedules/bidding_schedules.json')
-    Path('script_input/bidding_schedules.json').parent.mkdir(parents=True, exist_ok=True)
-    Path('script_input/bidding_schedules.json').write_bytes(response)
-    logger.info('Downloaded: schedules/bidding_schedules.json')
-except Exception as e:
-    logger.warning(f'Could not download bidding_schedules.json: {e}')
 
 # Download raw_data.xlsx (shared across all terms/windows)
 try:
@@ -104,37 +108,82 @@ logger.info('Supabase Storage download completed')
     echo "------------------------------------------------------------"
 fi
 
-# Generate log filename BEFORE Step 1 (combines ACAD_TERM_ID and window code)
+# --- Step 0b: Reset markers for THIS term/window run ---
+# Delete any stale _SUCCESS / _STARTED for the CURRENT term/window only (a
+# previous run's _SUCCESS would otherwise make the Lambda suppress retries for
+# the current run), then upload a fresh _STARTED so retries can detect that
+# this run is still in progress and avoid spawning a concurrent ECS task.
+if [ "${USE_SUPABASE_STORAGE}" = "true" ]; then
+    echo "[Step 0b] Resetting pipeline markers for ${WINDOW_CODE}..."
+
+    python -c "
+import os
+import sys
+from pathlib import Path
+
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+from supabase import create_client
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY, ACAD_TERM_ID
+from src.logging.logger import get_logger
+
+logger = get_logger(__name__)
+logger.info('Resetting pipeline markers')
+
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+bucket = 'bidlysmu-files'
+window_code = os.environ.get('WINDOW_CODE', 'UNKNOWN')
+remote_dir = f'output/{ACAD_TERM_ID}/{window_code}'
+
+# Remove stale markers for THIS term/window only — never touch other
+# terms/windows (their markers belong to their own runs).
+for marker in ('_SUCCESS', '_STARTED'):
+    try:
+        supabase.storage.from_(bucket).remove([f'{remote_dir}/{marker}'])
+        logger.info(f'Removed stale marker: {remote_dir}/{marker}')
+    except Exception as e:
+        logger.info(f'No stale marker to remove: {remote_dir}/{marker} ({e})')
+
+# Upload fresh _STARTED marker (Lambda retry detection: run in progress)
+_started = Path('script_output/_STARTED')
+if _started.exists():
+    try:
+        supabase.storage.from_(bucket).upload(
+            f'{remote_dir}/_STARTED',
+            _started.read_bytes(),
+            {'content-type': 'text/plain', 'upsert': 'true'}
+        )
+        logger.info(f'Uploaded: {remote_dir}/_STARTED')
+    except Exception as e:
+        logger.error(f'Failed to upload _STARTED marker: {e}')
+" 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "⚠️ WARNING: Step 0b (marker reset) failed. Continuing with pipeline."
+    else
+        echo "✅ Step 0b (marker reset) completed."
+    fi
+    echo "------------------------------------------------------------"
+fi
+
+# Generate log filename BEFORE Step 1 (combines ACAD_TERM_ID and window code).
+# WINDOW_CODE is the canonical abbrev from TARGET_CURRENT_WINDOW (above), so
+# the log name matches the marker/output paths exactly.
 LOG_FILENAME=$(python -c "
-from src.config import ACAD_TERM_ID, CURRENT_WINDOW_NAME
-import re
+import os
+import sys
+from pathlib import Path
+project_root = Path('.').resolve()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
-def window_to_code(name):
-    if not name:
-        return 'UNKNOWN'
-    # If input is already an abbrev code (e.g., "R1CW1", "R1FW1"), return as-is
-    m = re.search(r'^R(\d+)([A-CF]*)W(\d+)$', name, re.IGNORECASE)
-    if m:
-        return name
-    # Parse from full title format (e.g., "BOSS Round 1A Window 1 Results")
-    m = re.search(r'Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)', name, re.IGNORECASE)
-    if m:
-        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
-    m = re.search(r'[Rr]nd\s+(\d+)([A-C]?)\s+[Ww]in\s+(\d+)', name)
-    if m:
-        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
-    m = re.search(r'Incoming\s+(Freshmen|Exchange)', name, re.IGNORECASE)
-    if m:
-        suffix = 'F' if m.group(1).lower() == 'freshmen' else ''
-        m2 = re.search(r'Rnd\s+(\d+)', name)
-        m3 = re.search(r'Win\s+(\d+)', name)
-        if m2 and m3:
-            return f'R{m2.group(1)}{suffix}W{m3.group(1)}'
-    return 'UNKNOWN'
-
+from src.config import ACAD_TERM_ID
 from datetime import datetime
+
 ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-wc = window_to_code(CURRENT_WINDOW_NAME)
+wc = os.environ.get('WINDOW_CODE', 'UNKNOWN')
 print(f'{ACAD_TERM_ID}_{wc}_{ts}.log')
 ")
 
@@ -154,7 +203,11 @@ STREAM_A_LOG="logs/${LOG_FILENAME/.log/_1a_class_scrape.log}"
 STREAM_B_LOG="logs/${LOG_FILENAME/.log/_1b_overall_results.log}"
 
 SKIP_STREAM_B=false
-if echo "$CURRENT_WINDOW_NAME" | grep -qiE '^R1W1$'; then
+# Stream B (overall_results_scraper) seeds predictions from PAST results, so
+# it has nothing to scrape for the first window of a term (R1W1).  WINDOW_CODE
+# is the canonical abbrev (R1W1) passed verbatim by the Lambda, so compare on
+# it directly instead of grepping a full window name.
+if [ "$WINDOW_CODE" = "R1W1" ]; then
     echo "Skipping Stream B (OverallResults): no past results for first window (R1W1)"
     SKIP_STREAM_B=true
 fi
@@ -168,29 +221,25 @@ project_root = Path('.').resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.config import BIDDING_SCHEDULES, START_AY_TERM, ACAD_TERM_ID
+from src.config import BIDDING_SCHEDULES, ACAD_TERM_ID
 from src.driver.authenticator import AutomatedLogin, AuthCredentials
 from src.driver.driver_factory import ChromeDriverFactory
 from src.scraper.class_scraper import ClassScraper, ClassScraperConfig
+from src.scraper.scraper_coordinator import ScraperCoordinator
 from src.logging.logger import get_logger
 
 logger = get_logger(__name__)
 logger.info('Starting class_scraper')
 
-config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
+config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=ACAD_TERM_ID, headless=True)
 driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
 credentials = AuthCredentials.from_environment()
 authenticator = AutomatedLogin(credentials, driver_factory=driver_factory.create)
 scraper = ClassScraper(config=config)
-driver = driver_factory.create()
-scraper.connect(driver)
-driver.get('https://boss.intranet.smu.edu.sg/')
-driver = authenticator.login(driver)
-scraper.connect(driver)
+coordinator = ScraperCoordinator(authenticator=authenticator, scraper=scraper, logger=logger)
 logger.info(f'Scraping term={ACAD_TERM_ID}')
-result = scraper.scrape(acad_term_id=ACAD_TERM_ID)
+result = coordinator.run(acad_term_id=ACAD_TERM_ID)
 logger.info(f'Scraping completed: {result}')
-driver.quit()
 " 2>&1
 
     echo "[Stream A] Running html_data_extractor.py (1b)..."
@@ -227,29 +276,25 @@ project_root = Path('.').resolve()
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.config import BIDDING_SCHEDULES, START_AY_TERM
+from src.config import BIDDING_SCHEDULES, ACAD_TERM_ID
 from src.driver.authenticator import AutomatedLogin, AuthCredentials
 from src.driver.driver_factory import ChromeDriverFactory
 from src.scraper.overall_results_scraper import OverallResultsScraper, OverallResultsConfig
+from src.scraper.scraper_coordinator import ScraperCoordinator
 from src.logging.logger import get_logger
 
 logger = get_logger(__name__)
 logger.info('Starting overall_results_scraper')
 
-config = OverallResultsConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM, headless=True)
+config = OverallResultsConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=ACAD_TERM_ID, headless=True)
 driver_factory = ChromeDriverFactory(headless=True, window_size='1920,1080')
 credentials = AuthCredentials.from_environment()
 authenticator = AutomatedLogin(credentials, driver_factory=driver_factory.create)
 scraper = OverallResultsScraper(config=config)
-driver = driver_factory.create()
-scraper.connect(driver)
-driver.get('https://boss.intranet.smu.edu.sg/')
-driver = authenticator.login(driver)
-scraper.connect(driver)
-logger.info(f'Scraping term={START_AY_TERM}')
-result = scraper.scrape(term=START_AY_TERM, bid_round=None, bid_window=None, output_dir='./script_input/overallBossResults', authenticator=None)
+coordinator = ScraperCoordinator(authenticator=authenticator, scraper=scraper, logger=logger)
+logger.info(f'Scraping term={ACAD_TERM_ID}')
+result = coordinator.run(term=ACAD_TERM_ID, bid_round=None, bid_window=None, output_dir='./script_input/overallBossResults', authenticator=None)
 logger.info(f'Scraping completed: {result}')
-driver.quit()
 " 2>&1
 ) 2>&1 | tee "$STREAM_B_LOG" &
 PID_B=$!
@@ -325,18 +370,11 @@ if raw_data.exists():
     except Exception as e:
         logger.error(f'Failed to upload raw_data.xlsx: {e}')
 
-# Upload bidding_schedules.json
-schedules_file = Path('script_input/bidding_schedules.json')
-if schedules_file.exists():
-    try:
-        supabase.storage.from_(bucket).upload(
-            'schedules/bidding_schedules.json',
-            schedules_file.read_bytes(),
-            {'content-type': 'application/json', 'upsert': 'true'}
-        )
-        logger.info('Uploaded: schedules/bidding_schedules.json')
-    except Exception as e:
-        logger.error(f'Failed to upload bidding_schedules.json: {e}')
+# NOTE: bidding_schedules.json is deliberately NOT re-uploaded here.
+# The canonical path schedules/bidding_schedules.json is written ONLY by the
+# monthly scheduler Lambda (from fresh Trumba data).  Re-uploading the baked-in
+# git copy from script_input/ would clobber the canonical schedules with stale
+# data.  The local file stays local-only for local pipeline runs.
 
 # Upload overall results files
 overall_dir = Path('script_input/overallBossResults')
@@ -371,12 +409,12 @@ STEP2_LOG="logs/${LOG_FILENAME/.log/_2_process_pipeline.log}"
 
 python -c "
 import sys
-from src.config import BIDDING_SCHEDULES, START_AY_TERM, DB_CONFIG, PipelineConfig
+from src.config import BIDDING_SCHEDULES, ACAD_TERM_ID, DB_CONFIG, PipelineConfig
 from src.pipeline.pipeline_coordinator import PipelineCoordinator
 
 config = PipelineConfig.from_env(
     bidding_schedules=BIDDING_SCHEDULES,
-    start_ay_term=START_AY_TERM,
+    start_ay_term=ACAD_TERM_ID,
     db_config=DB_CONFIG
 )
 coordinator = PipelineCoordinator(config=config)
@@ -412,9 +450,8 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from supabase import create_client
-from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY, START_AY_TERM, CURRENT_WINDOW_NAME
+from src.config import SUPABASE_URL, SUPABASE_SERVICE_KEY, ACAD_TERM_ID
 from src.logging.logger import get_logger
-import re
 
 logger = get_logger(__name__)
 logger.info('Supabase Storage upload started')
@@ -422,16 +459,12 @@ logger.info('Supabase Storage upload started')
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 bucket = 'bidlysmu-files'
 
-def window_to_code(name):
-    if not name:
-        return 'UNKNOWN'
-    m = re.search(r'Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)', name, re.IGNORECASE)
-    if m:
-        return f'R{m.group(1)}{m.group(2)}W{m.group(3)}'
-    return 'UNKNOWN'
-
-window_code = window_to_code(CURRENT_WINDOW_NAME)
-remote_dir = f'output/{START_AY_TERM}/{window_code}'
+# Canonical marker path: output/{ACAD_TERM_ID}/{WINDOW_CODE} — ACAD_TERM_ID is
+# AY format (matches the Lambda's _pipeline_already_succeeded / _STARTED
+# checks) and WINDOW_CODE is the canonical abbrev from TARGET_CURRENT_WINDOW
+# (see the WINDOW_CODE computation at the top).
+window_code = os.environ.get('WINDOW_CODE', 'UNKNOWN')
+remote_dir = f'output/{ACAD_TERM_ID}/{window_code}'
 
 # Upload generated CSV files from script_output (organized by term/window)
 output_dir = Path('script_output')

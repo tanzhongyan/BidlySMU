@@ -66,7 +66,7 @@ class TestScrapingResult:
 
     def test_default_values(self):
         """ScrapingResult should have correct defaults."""
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1")
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1")
         assert result.files_saved == 0
         assert result.errors == []
         assert result.stopped_early is False
@@ -74,12 +74,12 @@ class TestScrapingResult:
 
     def test_is_success_true_when_files_saved_and_no_errors(self):
         """is_success should be True when files_saved > 0 and no errors."""
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1", files_saved=10)
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1", files_saved=10)
         assert result.is_success is True
 
     def test_is_success_false_when_no_files_saved(self):
         """is_success should be False when files_saved is 0."""
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1", files_saved=0)
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1", files_saved=0)
         assert result.is_success is False
 
     def test_is_success_false_when_has_errors(self):
@@ -90,7 +90,7 @@ class TestScrapingResult:
             message="Timeout"
         )
         result = ScrapingResult(
-            ay_term="2025-26_T1",
+            ay_term="AY202526T1",
             round_folder="R1W1",
             files_saved=10,
             errors=[error]
@@ -101,14 +101,14 @@ class TestScrapingResult:
         """duration_seconds should calculate time between start and end."""
         start = datetime(2025, 1, 1, 10, 0, 0)
         end = datetime(2025, 1, 1, 10, 0, 10)
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1")
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1")
         result.start_time = start
         result.end_time = end
         assert result.duration_seconds == 10.0
 
     def test_add_error_appends_to_errors(self):
         """add_error should append error to errors list."""
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1")
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1")
         error = ScraperError.create(
             url_attempted="https://example.com",
             error_type=ErrorType.UNKNOWN,
@@ -120,7 +120,7 @@ class TestScrapingResult:
 
     def test_finalize_sets_stopped_early_and_reason(self):
         """finalize should set stopped_early and stop_reason."""
-        result = ScrapingResult(ay_term="2025-26_T1", round_folder="R1W1")
+        result = ScrapingResult(ay_term="AY202526T1", round_folder="R1W1")
         result.finalize(stopped_early=True, stop_reason="300 empty records")
         assert result.stopped_early is True
         assert result.stop_reason == "300 empty records"

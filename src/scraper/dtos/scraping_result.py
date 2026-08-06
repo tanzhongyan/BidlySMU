@@ -62,7 +62,7 @@ class ScrapingResult:
 
     Usage:
         result = ScrapingResult(
-            ay_term="2025-26_T1",
+            ay_term="AY202526T1",
             round_folder="R1W1",
             files_saved=150,
             errors=[error1, error2],

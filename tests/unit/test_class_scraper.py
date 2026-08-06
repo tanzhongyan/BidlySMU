@@ -23,7 +23,7 @@ class TestClassScraperConfig:
     def test_config_requires_bidding_schedules(self):
         """Config should require bidding_schedules parameter."""
         # This test verifies the structure - actual validation happens at runtime
-        config = ClassScraperConfig(bidding_schedules={"2025-26_T1": []})
+        config = ClassScraperConfig(bidding_schedules={"AY202526T1": []})
         assert config.bidding_schedules is not None
 
 
@@ -230,7 +230,7 @@ class TestScrapeRange:
         mock_fn = Mock(side_effect=[False]*5)
         scraper._scrape_single_class = mock_fn
 
-        files_saved = scraper._scrape_range(mock_webdriver, "2025-26_T1", output_dir)
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
 
         # Should have stopped at threshold
         assert files_saved == 0
@@ -249,7 +249,7 @@ class TestScrapeRange:
         mock_fn = Mock(side_effect=[True, True, True, False, False, False])
         scraper._scrape_single_class = mock_fn
 
-        files_saved = scraper._scrape_range(mock_webdriver, "2025-26_T1", output_dir)
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
 
         assert files_saved == 3
 
@@ -267,7 +267,7 @@ class TestScrapeRange:
         # Mock: True, False, False, False, False, False, True (resets after success)
         scraper._scrape_single_class = Mock(side_effect=[True, False, False, False, False, True, False])
 
-        files_saved = scraper._scrape_range(mock_webdriver, "2025-26_T1", output_dir)
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
 
         # Should not have stopped at threshold because of the True in middle
         assert files_saved == 2
@@ -283,7 +283,7 @@ class TestScrapeRange:
         # Mock: False, False, None (error on 3rd call)
         scraper._scrape_single_class = Mock(side_effect=[False, False, None])
 
-        files_saved = scraper._scrape_range(mock_webdriver, "2025-26_T1", output_dir)
+        files_saved = scraper._scrape_range(mock_webdriver, "AY202526T1", output_dir)
 
         # Should stop at None (error)
         assert files_saved == 0
@@ -301,8 +301,8 @@ class TestScrapeMethod:
         ]
 
         config = ClassScraperConfig(
-            bidding_schedules={"2025-26_T1": past_schedule},
-            start_ay_term="2025-26_T1"
+            bidding_schedules={"AY202526T1": past_schedule},
+            start_ay_term="AY202526T1"
         )
         scraper = ClassScraper(config=config, driver=mock_webdriver, logger=mock_logger)
 

@@ -1,0 +1,18 @@
+# =============================================================================
+# Gitleaks configuration for BidlySMU
+#
+# Used by CI (.github/workflows/deploy.yml) and locally via `gitleaks detect`.
+# Extends gitleaks' default ruleset with repo-specific secret patterns.
+# =============================================================================
+
+title = "BidlySMU gitleaks config"
+
+[extend]
+useDefault = true
+
+# Repo-specific secret assignment patterns (KEY = value)
+[[rules]]
+id = "bidly-custom-secret-assignment"
+description = "BidlySMU secret assignment patterns (BOSS_PASSWORD, SUPABASE_SERVICE_KEY, GEMINI_API_KEY)"
+regex = '''(BOSS_PASSWORD|SUPABASE_SERVICE_KEY|GEMINI_API_KEY)\s*=\s*["']?[A-Za-z0-9_\-]{8,}'''
+secretGroup = 1

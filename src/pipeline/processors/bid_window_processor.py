@@ -1,16 +1,15 @@
 """
 BidWindowProcessor - handles bid window CREATE logic.
-Refactored to pure function pattern with DTO return.
+Uses a pure function pattern with DTO returns.
 """
 from collections import defaultdict
 import logging
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 from src.pipeline.processors.abstract_processor import AbstractProcessor
-from src.config import parse_bidding_window, CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, build_window_abbrev, acad_term_id_to_dash_format, ROUND_ORDER, SGT
+from src.config import parse_bidding_window, CURRENT_WINDOW_NAME, PREVIOUS_WINDOW_NAME, build_window_abbrev, ROUND_ORDER, _parse_sgt
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO, derive_timeline_from_results_at
 
 
@@ -43,12 +42,12 @@ class BidWindowProcessor(AbstractProcessor):
         Compute opens_at, closes_at, and results_at for a bid window.
 
         Priority:
-        1. If bidding_schedules.json entry has 5 elements (new extended format):
-           [results_at, title, abbrev, opens_at, closes_at] → use dates directly
-        2. If bidding_schedules.json entry has 3 elements (legacy format):
-           [results_at, title, abbrev] → derive opens_at/closes_at from results_at
-        3. If RESULTS_DATETIME env var is set for this exact window → use it + derive
-        4. Otherwise → leave as None
+        1. bidding_schedules.json entry [results_at, title, abbrev, opens_at, closes_at]
+           → use dates directly (SGT-aware)
+        2. If RESULTS_DATETIME env var is set for this exact window → use it + derive
+        3. Otherwise → leave as None
+
+        All returned datetimes are SGT-aware (the bid_window columns are TIMESTAMPTZ).
         """
         results_at = None
         opens_at = None
@@ -56,19 +55,15 @@ class BidWindowProcessor(AbstractProcessor):
 
         # Look up in bidding_schedules.json (matches by abbrev like "R1AW2")
         abbrev = build_window_abbrev(round_str, window_num)
-        dash_term = acad_term_id_to_dash_format(acad_term_id)
-        schedule = self._bidding_schedules.get(dash_term, [])
+        schedule = self._bidding_schedules.get(acad_term_id, [])
         for entry in schedule:
             if entry[2] == abbrev:
-                # Check if entry has extended format (5 elements: results, title, abbrev, opens, closes)
-                if len(entry) >= 5 and entry[3] and entry[4]:
-                    results_at = entry[0]
-                    opens_at = entry[3]
-                    closes_at = entry[4]
-                else:
-                    # Legacy format: derive from results_at
-                    results_at = entry[0]
-                    opens_at, closes_at = derive_timeline_from_results_at(results_at)
+                # Canonical entry: [results, title, abbrev, opens, closes].
+                # Null opens/closes stay None (RESULTS_DATETIME may still supply
+                # results_at for the current window).
+                results_at = entry[0]
+                opens_at = entry[3]
+                closes_at = entry[4]
                 break
 
         # RESULTS_DATETIME env var overrides results_at for the current run's window,
@@ -81,34 +76,15 @@ class BidWindowProcessor(AbstractProcessor):
                 )
             if (current_round == round_str and current_window == window_num):
                 try:
-                    results_at = datetime.fromisoformat(self._results_datetime)
+                    results_at = _parse_sgt(self._results_datetime)
                     # Only derive opens/closes if schedule didn't provide them
                     if opens_at is None or closes_at is None:
                         opens_at, closes_at = derive_timeline_from_results_at(results_at)
                 except (ValueError, TypeError):
                     pass
 
-        # Convert string dates to datetime if needed, then ensure SGT-aware
-        # bidding_schedules.json stores wall-clock times in SGT (naive or UTC).
-        # PostgreSQL TIMESTAMPTZ requires timezone-aware datetimes — naive
-        # datetimes are interpreted as UTC, causing an 8-hour offset.
-        # SGT is imported from src.config (single source of truth).
-
-        if isinstance(results_at, str):
-            results_at = datetime.fromisoformat(results_at)
-        if results_at is not None and results_at.tzinfo is None:
-            results_at = results_at.replace(tzinfo=SGT)
-
-        if isinstance(opens_at, str):
-            opens_at = datetime.fromisoformat(opens_at)
-        if opens_at is not None and opens_at.tzinfo is None:
-            opens_at = opens_at.replace(tzinfo=SGT)
-
-        if isinstance(closes_at, str):
-            closes_at = datetime.fromisoformat(closes_at)
-        if closes_at is not None and closes_at.tzinfo is None:
-            closes_at = closes_at.replace(tzinfo=SGT)
-
+        # Schedule values are SGT-aware (config parses them); RESULTS_DATETIME is
+        # pinned to SGT above. Persist SGT-aware for the TIMESTAMPTZ columns.
         if results_at is None:
             return None, None, None
 
@@ -152,7 +128,7 @@ class BidWindowProcessor(AbstractProcessor):
         # Determine starting ID for new windows
         max_id = 0
         for bid_window_entry in self._bid_window_cache.values():
-            # bid_window_entry may be int (old format) or dict (new format)
+            # bid_window_entry may be int or dict
             bid_window_id = bid_window_entry.get('id') if isinstance(bid_window_entry, dict) else bid_window_entry
             if isinstance(bid_window_id, int) and bid_window_id > max_id:
                 max_id = bid_window_id
@@ -213,8 +189,7 @@ class BidWindowProcessor(AbstractProcessor):
                 # term but this specific window is missing — prevents NaT from
                 # reaching PostgreSQL. If no schedules are loaded at all, create
                 # the window anyway (timeline dates will be NULL).
-                dash_term = acad_term_id_to_dash_format(acad_term_id)
-                has_schedules_for_term = bool(self._bidding_schedules.get(dash_term, []))
+                has_schedules_for_term = bool(self._bidding_schedules.get(acad_term_id, []))
                 if results_at is None and has_schedules_for_term:
                     self._logger.warning(
                         f"Skipping bid window {acad_term_id} Round {round_str} Window {window_num} "

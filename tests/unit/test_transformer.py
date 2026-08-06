@@ -631,39 +631,8 @@ class TestSectionFormats:
         assert result.loc[1, 'section'] == 'SG91'
 
 
-class TestCourseAreaPatterns:
-    """Tests for course_area handling based on sample data patterns.
-
-    Note: course_area is NOT processed by SMUBiddingTransformer._process_basic_features().
-    It is stored as a raw column in the CourseDTO and processed separately.
-    These tests document the expected course_area values from raw_data.xlsx.
-
-    Sample course_area values from raw_data.xlsx:
-    - "There is no applicable Course Area."
-    - "EMBA Programme Core"
-    - "MITB Digi Transformation Track Core"
-    - "GPGM Programme Core (OM)"
-    """
-
-    def test_course_area_values_are_strings(self):
-        """Test that course_area values from DataFrame are strings."""
-        df = pd.DataFrame({
-            'course_area': [
-                'EMBA Programme Core',
-                'MITB Digi Transformation Track Core',
-                'There is no applicable Course Area.'
-            ]
-        })
-
-        assert df.loc[0, 'course_area'] == 'EMBA Programme Core'
-        assert isinstance(df.loc[0, 'course_area'], str)
-
-
-class TestCreditUnitsAsFloat:
-    """Tests verifying credit_units are parsed as float.
-
-    Sample credit_units values from raw_data.xlsx: [0.5, 1.0, 1.5, 1.25, 2.0, 0.75, 28.0, 0.25, 26.0, 12.0, 4.0, 5.0, 6.0]
-    """
+class TestProcessBasicFeaturesNumericFields:
+    """Tests for numeric field handling in SMUBiddingTransformer._process_basic_features."""
 
     @pytest.fixture
     def transformer(self, mocker):

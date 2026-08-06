@@ -5,7 +5,6 @@ Encapsulates serialization logic and factory methods for CREATE.
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
-import json
 
 
 @dataclass
@@ -76,11 +75,9 @@ class BidPredictionDTO:
         median_predicted: float,
         median_uncertainty: float,
         min_predicted: float,
-        min_uncertainty: float,
-        safety_factors: dict = None
+        min_uncertainty: float
     ) -> 'BidPredictionDTO':
-        """Factory for CREATE - serializes safety factors to JSON for CSV only."""
-        safety_factors_json = json.dumps(safety_factors) if safety_factors else '{}'
+        """Factory for CREATE."""
         return BidPredictionDTO(
             class_id=class_id,
             bid_window_id=bid_window_id,
@@ -98,14 +95,6 @@ class BidPredictionDTO:
 @dataclass
 class SafetyFactorDTO:
     """DTO representing a safety factor record."""
-
-    COLUMNS = {
-        'acad_term_id': 'acadTermId',
-        'prediction_type': 'predictionType',
-        'beats_percentage': 'beatsPercentage',
-        'multiplier_type': 'multiplierType',
-        'multiplier': 'multiplier'
-    }
 
     acad_term_id: str
     prediction_type: str

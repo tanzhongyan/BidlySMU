@@ -15,6 +15,9 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
 
+permissions:
+  contents: read
+
 jobs:
   # ===========================================================================
   # Build & Push Pipeline Image
@@ -25,6 +28,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Secret scanning (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

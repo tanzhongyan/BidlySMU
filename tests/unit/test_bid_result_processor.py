@@ -7,6 +7,7 @@ from unittest.mock import Mock, MagicMock, patch
 import os
 
 from src.pipeline.processors.bid_result_processor import BidResultProcessor
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 from src.pipeline.dtos.bid_result_dto import BidResultDTO
 
 
@@ -113,67 +114,29 @@ class TestLoadOverallResults:
 
 
 class TestSafeConversions:
-    """Tests for safe value conversion methods."""
+    """Tests for safe value conversion helpers (canonical AbstractProcessor static methods)."""
 
     def test_safe_int_handles_nan(self):
-        """_safe_int should handle NaN values."""
-        processor = BidResultProcessor(
-            raw_data=pd.DataFrame(),
-            overall_results_path='',
-            class_lookup={},
-            bid_window_lookup={}
-        )
-
-        result = processor._safe_int(float('nan'))
-        assert result is None
+        """safe_int should handle NaN values."""
+        assert AbstractProcessor.safe_int(float('nan')) is None
 
     def test_safe_int_handles_none(self):
-        """_safe_int should handle None values."""
-        processor = BidResultProcessor(
-            raw_data=pd.DataFrame(),
-            overall_results_path='',
-            class_lookup={},
-            bid_window_lookup={}
-        )
-
-        result = processor._safe_int(None)
-        assert result is None
+        """safe_int should handle None values."""
+        assert AbstractProcessor.safe_int(None) is None
 
     def test_safe_int_converts_valid_values(self):
-        """_safe_int should convert valid integer strings."""
-        processor = BidResultProcessor(
-            raw_data=pd.DataFrame(),
-            overall_results_path='',
-            class_lookup={},
-            bid_window_lookup={}
-        )
-
-        assert processor._safe_int('42') == 42
-        assert processor._safe_int(42.5) == 42
+        """safe_int should convert valid integer strings."""
+        assert AbstractProcessor.safe_int('42') == 42
+        assert AbstractProcessor.safe_int(42.5) == 42
 
     def test_safe_float_handles_nan(self):
-        """_safe_float should handle NaN values."""
-        processor = BidResultProcessor(
-            raw_data=pd.DataFrame(),
-            overall_results_path='',
-            class_lookup={},
-            bid_window_lookup={}
-        )
-
-        result = processor._safe_float(float('nan'))
-        assert result is None
+        """safe_float should handle NaN values."""
+        assert AbstractProcessor.safe_float(float('nan')) is None
 
     def test_safe_float_converts_valid_values(self):
-        """_safe_float should convert valid float strings."""
-        processor = BidResultProcessor(
-            raw_data=pd.DataFrame(),
-            overall_results_path='',
-            class_lookup={},
-            bid_window_lookup={}
-        )
-
-        assert processor._safe_float('3.14') == 3.14
-        assert processor._safe_float(42) == 42.0
+        """safe_float should convert valid float strings."""
+        assert AbstractProcessor.safe_float('3.14') == 3.14
+        assert AbstractProcessor.safe_float(42) == 42.0
 
 
 class TestProcessPreviousWindow:

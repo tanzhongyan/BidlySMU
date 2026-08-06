@@ -208,22 +208,35 @@ class ProfessorResolutionService:
             self._logger.info(f"Merged {merged_count} entries from professor_lookup into resolution service")
 
     def _parse_boss_aliases_set(self, boss_aliases) -> Set[str]:
-        """Parse boss_aliases from DB cache into a set of clean strings."""
-        if not boss_aliases:
+        """Normalize boss_aliases from the professor cache into a set of upper-case aliases.
+
+        The cache is read from parquet, so the value can be a list, a numpy array, a
+        pandas Series, or a string (JSON or a ``{...}`` set literal). It is normalized
+        to a list first; truthiness is never evaluated on the raw value because a
+        multi-element numpy array raises ValueError in boolean context.
+        """
+        if boss_aliases is None:
             return set()
-        if isinstance(boss_aliases, list):
-            return {str(a).strip().upper() for a in boss_aliases if a and str(a).strip()}
+
+        if hasattr(boss_aliases, 'tolist'):
+            boss_aliases = boss_aliases.tolist()
+
         if isinstance(boss_aliases, str):
             if boss_aliases.startswith('{') and boss_aliases.endswith('}'):
                 content = boss_aliases[1:-1]
                 return {item.strip().strip('"').upper() for item in content.split(',') if item.strip()}
-            import json
             try:
                 parsed = json.loads(boss_aliases)
-                if isinstance(parsed, list):
-                    return {str(a).strip().upper() for a in parsed if a and str(a).strip()}
-            except:
-                pass
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, list):
+                return {str(a).strip().upper() for a in parsed if a and str(a).strip()}
+            stripped = boss_aliases.strip().strip('"').upper()
+            return {stripped} if stripped else set()
+
+        if isinstance(boss_aliases, list):
+            return {str(a).strip().upper() for a in boss_aliases if a and str(a).strip()}
+
         return set()
 
     def resolve_professor_ids(

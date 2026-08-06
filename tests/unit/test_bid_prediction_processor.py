@@ -43,7 +43,6 @@ class TestBidPredictionProcessor:
                 class_lookup={},
                 bid_window_lookup={},
                 multiple_lookup={},
-                bidding_schedule=[],
                 logger=Mock()
             )
             result = processor.process()
@@ -57,7 +56,6 @@ class TestBidPredictionProcessor:
             class_lookup={},
             bid_window_lookup={},
             multiple_lookup={},
-            bidding_schedule=[],
             logger=Mock()
         )
         result = processor.process()

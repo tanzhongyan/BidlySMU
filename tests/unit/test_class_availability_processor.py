@@ -69,7 +69,8 @@ class TestFilterToCurrentWindow:
         processor = ClassAvailabilityProcessor(
             raw_data=raw_data,
             class_lookup={},
-            bid_window_lookup={}
+            bid_window_lookup={},
+            logger=Mock()
         )
 
         result = processor._filter_to_current_window('Round 1 Window 1')
@@ -206,7 +207,7 @@ class TestClassAvailabilityProcessIntegration:
             bid_window_lookup={},
             logger=Mock()
         )
-        with patch('src.config.CURRENT_WINDOW_NAME', None):
+        with patch('src.pipeline.processors.class_availability_processor.CURRENT_WINDOW_NAME', None):
             result = processor.process()
         assert result == []
 
@@ -238,12 +239,12 @@ class TestClassAvailabilityProcessIntegration:
             logger=Mock()
         )
 
-        with patch('src.config.CURRENT_WINDOW_NAME', 'Round 1 Window 1'):
+        with patch('src.pipeline.processors.class_availability_processor.CURRENT_WINDOW_NAME', 'Round 1 Window 1'):
             result = processor.process()
 
         # Should produce availability DTOs for each class in the group
-        if result:
-            for dto in result:
-                assert isinstance(dto, ClassAvailabilityDTO)
-                assert dto.class_id is not None
-                assert dto.bid_window_id is not None
+        assert len(result) == 1
+        for dto in result:
+            assert isinstance(dto, ClassAvailabilityDTO)
+            assert dto.class_id is not None
+            assert dto.bid_window_id is not None

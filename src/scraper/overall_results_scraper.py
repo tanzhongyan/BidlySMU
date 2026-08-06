@@ -7,7 +7,7 @@ Usage:
         authenticator = AutomatedLogin(credentials)
         scraper.connect(driver)
         authenticator.login(driver)
-        result = scraper.run(term="2025-26_T1")
+        result = scraper.run(term="AY202627T1")
 """
 import os
 import re
@@ -26,7 +26,15 @@ from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.authenticator import Authenticator
 from src.logging.logger import get_logger
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
-from src.config import TERM_DISPLAY_MAP, PREVIOUS_WINDOW_NAME, START_AY_TERM_DISPLAY, START_AY_TERM, dash_format_to_display_format, parse_bidding_window
+from src.config import (
+    SGT,
+    TERM_DISPLAY_MAP,
+    PREVIOUS_WINDOW_NAME,
+    ACAD_TERM_ID,
+    ACAD_TERM_DISPLAY,
+    acad_term_id_to_display_format,
+    parse_bidding_window,
+)
 
 
 @dataclass
@@ -35,7 +43,9 @@ class OverallResultsConfig:
     bidding_schedules: dict  # REQUIRED
     start_ay_term: str  # REQUIRED
     base_url: str = "https://boss.intranet.smu.edu.sg/OverallResults.aspx"
-    delay: int = 5
+    delay: int = 5  # kept for backward compatibility
+    delay_between_requests: float = 5.0  # canonical base-contract field
+    timeout: int = 60
     headless: bool = True
     page_size: int = 50
     max_retries: int = 3
@@ -58,19 +68,15 @@ class OverallResultsScraper(AbstractScraper):
 
     _TERM_DISPLAY_MAP = TERM_DISPLAY_MAP  # Use from config
 
-    def _transform_term_format(self, short_term: str) -> str:
-        """Convert '2025-26_T3A' -> '2025-26 Term 3A' for BOSS website dropdown."""
-        return dash_format_to_display_format(short_term)
+    def _transform_term_format(self, acad_term_id: str) -> str:
+        """Convert 'AY202627T1' -> '2026-27 Term 1' for BOSS website dropdown."""
+        return acad_term_id_to_display_format(acad_term_id)
 
-    def _get_website_term(self, dash_term: str) -> str:
-        """Get the website display term for BOSS dropdown.
-
-        If dash_term matches START_AY_TERM, use pre-computed START_AY_TERM_DISPLAY.
-        Otherwise compute via _transform_term_format.
-        """
-        if dash_term == START_AY_TERM:
-            return START_AY_TERM_DISPLAY
-        return self._transform_term_format(dash_term)
+    def _get_website_term(self, acad_term_id: str) -> str:
+        """Get the website display term for BOSS dropdown (AY -> display)."""
+        if acad_term_id == ACAD_TERM_ID:
+            return ACAD_TERM_DISPLAY
+        return acad_term_id_to_display_format(acad_term_id)
 
     def __init__(
         self,
@@ -97,7 +103,7 @@ class OverallResultsScraper(AbstractScraper):
         Run the scraper for a single term.
 
         Args:
-            term: Term to scrape (e.g., '2025-26_T1')
+            term: Term to scrape (e.g., 'AY202627T1')
             bid_round: Specific bid round to filter by
             bid_window: Specific bid window to filter by
             output_dir: Directory to save output files
@@ -131,9 +137,11 @@ class OverallResultsScraper(AbstractScraper):
                 self._driver = authenticator.login(self._driver)
                 self.connect(self._driver)
 
-            # Scrape data
+            # Scrape data. Pass the canonical AY term so filenames stay AY
+            # (e.g. AY202627T1.xlsx); the display term is derived inside
+            # _scrape_term_data only for the BOSS dropdown.
             data = self._scrape_term_data(
-                term=website_term,
+                term=term,
                 bid_round=bid_round,
                 bid_window=bid_window,
                 output_dir=output_dir,
@@ -175,8 +183,8 @@ class OverallResultsScraper(AbstractScraper):
         except Exception:
             pass
 
-        # Fallback: time-based detection
-        current_time = datetime.now()
+        # Fallback: time-based detection (schedule entries are SGT-aware)
+        current_time = datetime.now(SGT)
         self._logger.info(f"Current time: {current_time}")
 
         if self._config.start_ay_term not in self._config.bidding_schedules:
@@ -221,7 +229,9 @@ class OverallResultsScraper(AbstractScraper):
         """
         self._navigate_to_overall_results()
         self._select_course_career("Undergraduate")
-        self._select_term(term)
+        # The BOSS dropdown needs the display term; the AY term stays the
+        # filename source (AY202627T1.xlsx).
+        self._select_term(self._get_website_term(term))
         self._select_bid_round(bid_round)
         self._select_bid_window(bid_window)
         self._click_search()
@@ -283,7 +293,7 @@ class OverallResultsScraper(AbstractScraper):
                 break
 
             page_num += 1
-            time.sleep(self._config.delay)
+            time.sleep(self._config.delay_between_requests)
 
         # Save to Excel
         if all_data:
@@ -306,8 +316,7 @@ class OverallResultsScraper(AbstractScraper):
     def _navigate_to_overall_results(self) -> None:
         """Navigate to the Overall Results page."""
         self._driver.get(self._config.base_url)
-        wait = WebDriverWait(self._driver, 30)
-        wait.until(EC.presence_of_element_located((By.ID, "rcboCourseCareer")))
+        self.wait_for_presence(By.ID, "rcboCourseCareer", timeout=self._config.timeout)
         self._logger.info("Successfully navigated to Overall Results page")
         time.sleep(2)
 
@@ -611,7 +620,7 @@ class OverallResultsScraper(AbstractScraper):
                 return False
 
             next_button.click()
-            time.sleep(self._config.delay)
+            time.sleep(self._config.delay_between_requests)
 
             wait = WebDriverWait(self._driver, 15)
             wait.until(EC.presence_of_element_located((By.ID, "RadGrid_OverallResults_ctl00")))
@@ -654,12 +663,8 @@ class OverallResultsScraper(AbstractScraper):
     # ==================== Output Methods ====================
 
     def _generate_filename(self, term: str) -> str:
-        """Generate filename based on term (display format '2025-26 Term 3A' -> '2025-26_T3A.xlsx')."""
-        # Convert display format to dash format: '2025-26 Term 3A' -> '2025-26_T3A'
-        match = re.match(r'(\d{4})-(\d{2})\s+Term\s+([A-Z0-9]+)', term)
-        if match:
-            return f"{match.group(1)}-{match.group(2)}_T{match.group(3)}.xlsx"
-        return term + '.xlsx'
+        """Filename is the canonical AY term, matching classTimingsFull/ and output/. """
+        return f"{term}.xlsx"
 
     def _save_to_excel(self, data: List[dict], term: str, output_dir: str) -> None:
         """Save data to Excel file."""

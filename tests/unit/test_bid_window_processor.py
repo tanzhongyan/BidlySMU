@@ -3,7 +3,7 @@ Unit tests for BidWindowProcessor (refactored DTO pattern).
 """
 import pytest
 import pandas as pd
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.pipeline.processors.bid_window_processor import BidWindowProcessor
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
@@ -385,3 +385,51 @@ class TestBidWindowParseBiddingWindowIntegration:
         new_windows, _ = processor.process()
 
         assert len(new_windows) == 0
+
+
+class TestComputeTimeline:
+    """_compute_timeline returns SGT-aware datetimes for the TIMESTAMPTZ columns.
+
+    Regression: naive-SGT wall-clock values were previously persisted to
+    TIMESTAMPTZ columns, where Postgres interprets them as UTC — an 8-hour
+    offset. Schedule values are already SGT-aware (config parses them) and the
+    RESULTS_DATETIME override is pinned to SGT via config._parse_sgt.
+    """
+
+    @staticmethod
+    def _make_schedules():
+        from src.config import _parse_schedule_entries
+        return _parse_schedule_entries({
+            "AY202627T1": [
+                # [results_at, title, abbrev, opens_at, closes_at] — naive SGT strings
+                ["2026-08-11T14:00:00", "Round 1F Window 1", "R1FW1",
+                 "2026-08-07T10:00:00", "2026-08-11T10:00:00"],
+            ]
+        })
+
+    def test_schedule_values_are_sgt_aware(self):
+        """Datetimes taken from the schedule are SGT-aware (not naive)."""
+        proc = BidWindowProcessor(
+            raw_data=pd.DataFrame(),
+            bid_window_cache={},
+            bidding_schedules=self._make_schedules(),
+            logger=MagicMock(),
+        )
+        opens, closes, results = proc._compute_timeline("AY202627T1", "1F", 1)
+        for dt in (opens, closes, results):
+            assert dt.tzinfo is not None
+            assert dt.utcoffset().total_seconds() == 8 * 3600
+
+    def test_results_datetime_override_is_sgt_aware(self):
+        """RESULTS_DATETIME (naive SGT string) is pinned to SGT, not left naive."""
+        proc = BidWindowProcessor(
+            raw_data=pd.DataFrame(),
+            bid_window_cache={},
+            bidding_schedules=self._make_schedules(),
+            results_datetime="2026-08-11T14:00:00",
+            logger=MagicMock(),
+        )
+        with patch('src.pipeline.processors.bid_window_processor.CURRENT_WINDOW_NAME', 'Round 1F Window 1'):
+            opens, closes, results = proc._compute_timeline("AY202627T1", "1F", 1)
+        assert results.tzinfo is not None
+        assert results.utcoffset().total_seconds() == 8 * 3600

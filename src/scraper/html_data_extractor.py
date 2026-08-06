@@ -20,6 +20,7 @@ from src.scraper.abstract_scraper import AbstractScraper
 from src.driver.driver_factory import ChromeDriverFactory
 from src.parser.excel_writer import ExcelWriter
 from src.logging.logger import get_logger
+from src.config import ROUND_ORDER, SGT, TERM_DISPLAY_MAP
 
 
 @dataclass
@@ -57,16 +58,17 @@ class HTMLDataExtractor(AbstractScraper):
     # ==================== Encoding fix ====================
 
     _ENCODING_FIXES = [
-        ('â€"', '—'),
-        ('â€™', "'"),
-        ('â€"', '"'),
-        ('â€¦', '…'),
-        ('â€¢', '•'),
-        ('â€‹', ''),
-        ('â€‚', ' '),
-        ('â€ƒ', ' '),
-        ('â€‰', ' '),
-        ('â€', '"'),
+        ('â€œ', '"'),   # U+201C left double quote
+        ('â€"', '"'),   # U+201D right double quote
+        ('â€“', '–'),   # U+2013 en dash
+        ('â€”', '—'),   # U+2014 em dash
+        ('â€™', "'"),   # U+2019 right single quote / apostrophe
+        ('â€¦', '…'),   # U+2026 ellipsis
+        ('â€¢', '•'),   # U+2022 bullet
+        ('â€‹', ''),    # U+200B zero-width space
+        ('â€‚', ' '),   # U+200A hair space
+        ('â€ƒ', ' '),   # U+2003 em space
+        ('â€‰', ' '),   # U+2009 thin space
         ('Â', ''),
     ]
 
@@ -77,7 +79,13 @@ class HTMLDataExtractor(AbstractScraper):
         cleaned = text
         for bad, good in HTMLDataExtractor._ENCODING_FIXES:
             cleaned = cleaned.replace(bad, good)
-        cleaned = re.sub(r'â€[^\w]', '', cleaned)
+        # Fallback: round-trip any residual latin-1 -> UTF-8 mojibake instead of
+        # deleting it (the old `re.sub(r'â€[^\w]', '', ...)` dropped apostrophes
+        # and quotes from names). Strict decode only — never errors='ignore'.
+        try:
+            cleaned = cleaned.encode('latin-1').decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
         return cleaned.strip()
 
     # ==================== AbstractScraper Implementation ====================
@@ -404,10 +412,9 @@ class HTMLDataExtractor(AbstractScraper):
         end_year_short = int(match.group(2))
         term_desc = match.group(3).lower()
 
-        if end_year_short < 50:
-            end_year = 2000 + end_year_short
-        else:
-            end_year = 1900 + end_year_short
+        # Two-digit end year (e.g. "26" in "2025-26 Term 3A") is always 20xx
+        # for SMU data — no ambiguous 19xx/20xx split for current-era records.
+        end_year = 2000 + end_year_short
 
         term_code = self._determine_term_code(term_desc)
 
@@ -422,19 +429,28 @@ class HTMLDataExtractor(AbstractScraper):
         if not term_code:
             return start_year, end_year, None, None
 
+        # Build the BOSS acad_term_id directly in AY format (no dash intermediate).
         acad_term_id = f"AY{start_year}{end_year_short:02d}{term_code}"
 
         return start_year, end_year, term_code, acad_term_id
 
     def _determine_term_code(self, term_desc: str) -> Optional[str]:
-        """Determine term code from description."""
-        if 'term 1' in term_desc or 'session 1' in term_desc or 'august term' in term_desc:
+        """Determine term code from description.
+
+        Uses the canonical TERM_DISPLAY_MAP from config (reverse lookup) so
+        the term vocabulary matches the rest of the codebase.
+        """
+        term1 = TERM_DISPLAY_MAP['T1'].lower()
+        term2 = TERM_DISPLAY_MAP['T2'].lower()
+        term3a = TERM_DISPLAY_MAP['T3A'].lower()
+        term3b = TERM_DISPLAY_MAP['T3B'].lower()
+        if term1 in term_desc or 'session 1' in term_desc or 'august term' in term_desc:
             return 'T1'
-        elif 'term 2' in term_desc or 'session 2' in term_desc or 'january term' in term_desc:
+        elif term2 in term_desc or 'session 2' in term_desc or 'january term' in term_desc:
             return 'T2'
-        elif 'term 3a' in term_desc:
+        elif term3a in term_desc:
             return 'T3A'
-        elif 'term 3b' in term_desc:
+        elif term3b in term_desc:
             return 'T3B'
         elif 'term 3' in term_desc:
             return 'T3'
@@ -471,9 +487,15 @@ class HTMLDataExtractor(AbstractScraper):
         return start_date, end_date
 
     def _convert_date_to_timestamp(self, date_str: str) -> Optional[str]:
-        """Convert DD-Mmm-YYYY to database timestamp format."""
+        """Convert DD-Mmm-YYYY to database timestamp format.
+
+        Output is "YYYY-MM-DD 00:00:00.000 +0800" (SGT midnight) — a string the
+        DB layer consumes directly. Derived from a real datetime pinned to SGT
+        so the format stays consistent with the SGT timezone convention.
+        """
         try:
             date_obj = datetime.strptime(date_str, '%d-%b-%Y')
+            date_obj = date_obj.replace(tzinfo=SGT)
             return date_obj.strftime('%Y-%m-%d 00:00:00.000 +0800')
         except Exception:
             return None
@@ -626,17 +648,20 @@ class HTMLDataExtractor(AbstractScraper):
     def _extract_bidding_window_from_folder(self, folder_name: str) -> str:
         """Extract bidding window from folder name using BIDDING_SCHEDULES.
 
-        Returns clean format (e.g., "Round 1A Window 1") without BOSS prefix.
+        Folder names may be the canonical abbrev ("R1FW4") or a legacy
+        "2026-27_T1_R1FW4" form written by older scrapers — the suffix after
+        the last "_" is the abbrev. Returns the clean full name (e.g.
+        "Round 1A Window 1") without BOSS prefix.
         """
         round_part = folder_name.split('_')[-1]
 
-        from src.config import BIDDING_SCHEDULES, START_AY_TERM, abbrev_window_to_full
-        schedule = BIDDING_SCHEDULES.get(START_AY_TERM, [])
+        from src.config import BIDDING_SCHEDULES, ACAD_TERM_ID, abbrev_window_to_full
+        schedule = BIDDING_SCHEDULES.get(ACAD_TERM_ID, [])
         for entry in schedule:
-            if len(entry) >= 3 and entry[2] == round_part:
+            if entry[2] == round_part:
                 return abbrev_window_to_full(entry[2])
 
-        # Fallback: try direct conversion of the folder suffix
+        # Fallback: direct conversion of the folder suffix
         return abbrev_window_to_full(round_part)
 
     def _get_current_academic_term(self) -> Optional[str]:
@@ -657,12 +682,23 @@ class HTMLDataExtractor(AbstractScraper):
             if not round_folders:
                 return None
 
-            round_folders.sort(key=lambda x: (
-                int(x.split('R')[1].split('W')[0].replace('A', '').replace('B', '').replace('C', '').replace('F', '')),
-                x.count('A') + x.count('B') * 2 + x.count('C') * 3 + x.count('F') * 4,
-                int(x.split('W')[1])
-            ))
+            round_folders.sort(key=self._round_folder_sort_key)
 
             return round_folders[-1]
         except Exception:
             return None
+
+    @staticmethod
+    def _round_folder_sort_key(folder: str) -> tuple:
+        """Sort key for round folders using the canonical ROUND_ORDER from config.
+
+        Accepts abbrev ("R1FW4") and legacy prefixed ("2026-27_T1_R1FW4") folder
+        names — the round part is the text between "R" and "W". Rounds not in
+        ROUND_ORDER sort last (rank 99).
+        """
+        try:
+            round_part = folder.split('R')[1].split('W')[0]
+            window_num = int(folder.split('W')[1])
+        except (IndexError, ValueError):
+            return (99, folder)
+        return (ROUND_ORDER.get(round_part, 99), window_num)

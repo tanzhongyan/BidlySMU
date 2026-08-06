@@ -7,9 +7,9 @@ Tests cover:
 - EventBridge scheduler integration
 - Bidding schedule management
 - Schedule tracking
-- Term conversion
 """
 import importlib.util
+import json
 import pytest
 from unittest.mock import MagicMock, Mock, patch
 from datetime import datetime
@@ -86,13 +86,13 @@ class TestBossEvent:
     def test_boss_event_creation(self):
         """BossEvent should store all fields correctly."""
         event = BossEvent(
-            term="2026-27_T1",
+            term="AY202627T1",
             start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
             is_results=True
         )
-        assert event.term == "2026-27_T1"
+        assert event.term == "AY202627T1"
         assert event.start_dt == "2026-07-08T14:00:00"
         assert event.abbrev == "R1W1"
         assert event.title == "BOSS Round 1 Window 1"
@@ -101,7 +101,7 @@ class TestBossEvent:
     def test_boss_event_to_dict(self):
         """to_dict should return correct dictionary representation."""
         event = BossEvent(
-            term="2026-27_T1",
+            term="AY202627T1",
             start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
@@ -109,7 +109,7 @@ class TestBossEvent:
         )
         result = event.to_dict()
         assert result == {
-            "term": "2026-27_T1",
+            "term": "AY202627T1",
             "start_dt": "2026-07-08T14:00:00",
             "abbrev": "R1W1",
             "title": "BOSS Round 1 Window 1",
@@ -120,7 +120,7 @@ class TestBossEvent:
     def test_boss_event_is_frozen(self):
         """BossEvent should be immutable (frozen dataclass)."""
         event = BossEvent(
-            term="2026-27_T1",
+            term="AY202627T1",
             start_dt="2026-07-08T14:00:00",
             abbrev="R1W1",
             title="BOSS Round 1 Window 1",
@@ -211,7 +211,7 @@ class TestTrubaClientFetchBossEvents:
         result = client.fetch_boss_events()
 
         assert len(result) == 1
-        assert result[0].title == "BOSS Round 1 Window 1"
+        assert result[0].title == "Round 1 Window 1"
 
     def test_fetch_boss_events_includes_both_window_and_results(self, truba_config, mock_requests):
         """Should return both Window and Results BOSS events."""
@@ -242,7 +242,7 @@ class TestTrubaClientFetchBossEvents:
         client = TrubaClient(truba_config)
         result = client.fetch_boss_events()
 
-        assert result[0].term == "2026-27_T1"
+        assert result[0].term == "AY202627T1"
 
     def test_fetch_boss_events_parses_abbrev(self, truba_config, mock_requests):
         """Should parse round/window abbreviation from title."""
@@ -277,6 +277,67 @@ class TestTrubaClientFetchBossEvents:
         assert len(result) == 1
         assert isinstance(result[0], BossEvent)
 
+    def test_fetch_boss_events_skips_boss_non_window_events(self, truba_config, mock_requests):
+        """BOSS-named events that aren't bid windows should be skipped, not aliased to R1W1."""
+        mock_requests["response"].json.return_value = [
+            {"title": "BOSS Course Registration", "startDateTime": "2026-07-08T14:00:00Z"},
+            {"title": "BOSS Round 1 Window 1 Results", "startDateTime": "2026-07-08T14:00:00Z"},
+        ]
+
+        client = TrubaClient(truba_config)
+        result = client.fetch_boss_events()
+
+        assert len(result) == 1
+        assert result[0].abbrev == "R1W1"
+
+    def test_fetch_boss_events_normalizes_utc_to_sgt_wall_clock(self, truba_config, mock_requests):
+        """UTC (Z) timestamps should be emitted as SGT wall-clock without tzinfo."""
+        mock_requests["response"].json.return_value = [
+            {"title": "BOSS Round 1 Window 1", "startDateTime": "2026-07-06T10:00:00Z"},
+        ]
+
+        client = TrubaClient(truba_config)
+        result = client.fetch_boss_events()
+
+        assert result[0].start_dt == "2026-07-06T18:00:00"  # UTC 10:00 -> SGT 18:00, no tzinfo
+        assert result[0].end_dt is None
+
+    def test_fetch_boss_events_keeps_naive_sgt_timestamps(self, truba_config, mock_requests):
+        """Naive timestamps (already SGT wall-clock) should pass through unchanged."""
+        mock_requests["response"].json.return_value = [
+            {"title": "BOSS Round 1 Window 1", "startDateTime": "2026-07-06T10:00:00"},
+        ]
+
+        client = TrubaClient(truba_config)
+        result = client.fetch_boss_events()
+
+        assert result[0].start_dt == "2026-07-06T10:00:00"
+
+
+class TestTrubaClientFetchBossWindows:
+    """Tests for TrubaClient.fetch_boss_windows method."""
+
+    def test_pairs_windows_with_results_and_skips_unparseable(self, truba_config, mock_requests):
+        """Should pair window+results events and skip non-window BOSS events."""
+        mock_requests["response"].json.return_value = [
+            {"title": "BOSS Course Registration", "startDateTime": "2026-07-01T10:00:00Z"},
+            {
+                "title": "BOSS Round 1 Window 1",
+                "startDateTime": "2026-07-06T10:00:00Z",
+                "endDateTime": "2026-07-08T10:00:00Z",
+            },
+            {"title": "BOSS Round 1 Window 1 Results", "startDateTime": "2026-07-08T14:00:00Z"},
+        ]
+
+        client = TrubaClient(truba_config)
+        windows = client.fetch_boss_windows()
+
+        assert len(windows) == 1
+        assert windows[0].abbrev == "R1W1"
+        assert windows[0].opens_at == "2026-07-06T18:00:00"
+        assert windows[0].closes_at == "2026-07-08T18:00:00"
+        assert windows[0].results_at == "2026-07-08T22:00:00"
+
 
 # ==============================================================================
 # TrubaClient _extract_term Tests
@@ -286,12 +347,12 @@ class TestTrubaClientExtractTerm:
     """Tests for TrubaClient._extract_term method."""
 
     @pytest.mark.parametrize("term_text,expected", [
-        ("2026-27 Term 1 - Regular Academic Session", "2026-27_T1"),
-        ("2025-26 Term 2 - Regular Academic Session", "2025-26_T2"),
-        ("2025-26 Term 3A - Regular Academic Session", "2025-26_T3A"),
-        ("2025-26 Term 3B - Regular Academic Session", "2025-26_T3B"),
-        ("AY2026-27 Term 1 - Regular Academic Session", "2026-27_T1"),
-        ("2025-26 Term 1 - 1A Session", "2025-26_T1"),
+        ("2026-27 Term 1 - Regular Academic Session", "AY202627T1"),
+        ("2025-26 Term 2 - Regular Academic Session", "AY202526T2"),
+        ("2025-26 Term 3A - Regular Academic Session", "AY202526T3A"),
+        ("2025-26 Term 3B - Regular Academic Session", "AY202526T3B"),
+        ("AY2026-27 Term 1 - Regular Academic Session", "AY202627T1"),
+        ("2025-26 Term 1 - 1A Session", "AY202526T1"),
     ])
     def test_extract_valid_terms(self, truba_config, term_text, expected):
         """Should extract term identifiers correctly."""
@@ -307,7 +368,15 @@ class TestTrubaClientExtractTerm:
         client = TrubaClient(truba_config)
         event_data = {"customFields": []}
         result = client._extract_term(event_data)
-        assert "_T" in result
+        assert result.startswith("AY")
+
+    def test_extract_term_returns_ay_format(self):
+        """Trumba '2026-27 Term 1 ...' is parsed directly to AY — no dash intermediate."""
+        client = TrubaClient(TrubaConfig())
+        term = client._extract_term({
+            'customFields': [{'label': 'Term', 'value': '2026-27 Term 1 - Regular Academic Session'}]
+        })
+        assert term == 'AY202627T1'
 
 
 # ==============================================================================
@@ -318,18 +387,18 @@ class TestTrubaClientInferTermFromDate:
     """Tests for TrubaClient._infer_term_from_date method."""
 
     @pytest.mark.parametrize("month,expected_term_suffix", [
-        (8, "_T1"),   # August -> Term 1
-        (9, "_T1"),   # September -> Term 1
-        (10, "_T1"),  # October -> Term 1
-        (11, "_T1"),  # November -> Term 1
-        (12, "_T1"),  # December -> Term 1
-        (1, "_T2"),   # January -> Term 2
-        (2, "_T2"),   # February -> Term 2
-        (3, "_T2"),   # March -> Term 2
-        (4, "_T2"),   # April -> Term 2
-        (5, "_T3A"),  # May -> Term 3A
-        (6, "_T3B"),  # June -> Term 3B
-        (7, "_T3B"),  # July -> Term 3B
+        (8, "T1"),   # August -> Term 1
+        (9, "T1"),   # September -> Term 1
+        (10, "T1"),  # October -> Term 1
+        (11, "T1"),  # November -> Term 1
+        (12, "T1"),  # December -> Term 1
+        (1, "T2"),   # January -> Term 2
+        (2, "T2"),   # February -> Term 2
+        (3, "T2"),   # March -> Term 2
+        (4, "T2"),   # April -> Term 2
+        (5, "T3A"),  # May -> Term 3A
+        (6, "T3B"),  # June -> Term 3B
+        (7, "T3B"),  # July -> Term 3B
     ])
     def test_infer_term_by_month(self, truba_config, month, expected_term_suffix):
         """Should infer correct term based on month."""
@@ -347,32 +416,41 @@ class TestTrubaClientInferTermFromDate:
 class TestTrubaClientParseTitle:
     """Tests for TrubaClient._parse_title method."""
 
-    @pytest.mark.parametrize("title,expected_round,expected_window", [
-        ("BOSS Round 1 Window 1", "R1", "W1"),
-        ("BOSS Round 1A Window 1", "R1A", "W1"),
-        ("BOSS Round 1B Window 2", "R1B", "W2"),
-        ("BOSS Round 2 Window 3", "R2", "W3"),
-        ("BOSS Round 1 Window 1 Results", "R1", "W1"),
-        ("BOSS Round 1A Window 1 Results", "R1A", "W1"),
-        ("BOSS Round 1B Window 2 Results", "R1B", "W2"),
-        ("BOSS Round 2 Window 3 Results", "R2", "W3"),
-        ("BOSS Round 1A Window 2", "R1A", "W2"),
-        ("BOSS Round 2 Window 4", "R2", "W4"),
-        ("BOSS Round 2A Window 1", "R2A", "W1"),
+    @pytest.mark.parametrize("title,expected_abbrev", [
+        ("BOSS Round 1 Window 1", "R1W1"),
+        ("BOSS Round 1A Window 1", "R1AW1"),
+        ("BOSS Round 1B Window 2", "R1BW2"),
+        ("BOSS Round 2 Window 3", "R2W3"),
+        ("BOSS Round 1 Window 1 Results", "R1W1"),
+        ("BOSS Round 1A Window 1 Results", "R1AW1"),
+        ("BOSS Round 1B Window 2 Results", "R1BW2"),
+        ("BOSS Round 2 Window 3 Results", "R2W3"),
+        ("BOSS Round 1A Window 2", "R1AW2"),
+        ("BOSS Round 2 Window 4", "R2W4"),
+        ("BOSS Round 2A Window 1", "R2AW1"),
     ])
-    def test_parse_valid_titles(self, truba_config, title, expected_round, expected_window):
-        """Should parse BOSS titles correctly."""
+    def test_parse_valid_titles(self, truba_config, title, expected_abbrev):
+        """Should parse BOSS titles into window abbrevs."""
         client = TrubaClient(truba_config)
-        round_info, window_info = client._parse_title(title)
-        assert round_info == expected_round
-        assert window_info == expected_window
+        assert client._parse_title(title) == expected_abbrev
 
-    def test_parse_unusual_format_returns_fallback(self, truba_config):
-        """Should return fallback for unusual formats."""
+    @pytest.mark.parametrize("title,expected_abbrev", [
+        ("BOSS Incoming Freshmen Round 1 Window 1", "R1FW1"),
+        ("BOSS Incoming Freshmen Rnd 1 Win 4", "R1FW4"),
+        ("BOSS Incoming Exchange Round 1C Window 1", "R1CW1"),
+        ("BOSS Incoming Exchange Rnd 2 Win 3", "R2W3"),
+    ])
+    def test_parse_incoming_titles(self, truba_config, title, expected_abbrev):
+        """Incoming Freshmen/Exchange titles should keep their distinguishing suffixes."""
         client = TrubaClient(truba_config)
-        round_info, window_info = client._parse_title("BOSS Event")
-        assert round_info == "R1"
-        assert window_info == "W1"
+        assert client._parse_title(title) == expected_abbrev
+
+    def test_parse_unusual_format_returns_none(self, truba_config):
+        """Unparseable titles should return None, not a bogus R1W1."""
+        client = TrubaClient(truba_config)
+        assert client._parse_title("BOSS Event") is None
+        assert client._parse_title("BOSS Course Registration") is None
+        assert client._parse_title("File for Graduation") is None
 
 
 # ==============================================================================
@@ -418,7 +496,7 @@ class TestEventBridgeScheduler:
         assert result is False
 
     def test_create_schedule_calls_api(self, mock_eventbridge_client):
-        """create_schedule should call EventBridge API with correct params."""
+        """create_schedule should create primary + 2 retry schedules with correct params."""
         lambda_module = _load_lambda_module()
         scheduler = lambda_module.EventBridgeScheduler(
             region="ap-southeast-1",
@@ -432,17 +510,35 @@ class TestEventBridgeScheduler:
 
         scrape_time = datetime(2026, 7, 6, 10, 0)
         scheduler.create_schedule(
-            schedule_name="bidlysmu-pipeline-2026-27_T1-R1W1",
+            schedule_name="bidlysmu-pipeline-AY202627T1-R1W1",
             scrape_time=scrape_time,
-            term="2026-27_T1",
+            term="AY202627T1",
             abbrev="R1W1",
             results_datetime="2026-07-08T14:00:00"
         )
 
-        mock_eventbridge_client.create_schedule.assert_called_once()
-        call_kwargs = mock_eventbridge_client.create_schedule.call_args[1]
-        assert call_kwargs["Name"] == "bidlysmu-pipeline-2026-27_T1-R1W1"
-        assert "at(2026-07-06T10:00:00)" in call_kwargs["ScheduleExpression"]
+        # Primary + retry1 (+2h) + retry2 (+4h)
+        assert mock_eventbridge_client.create_schedule.call_count == 3
+        calls = mock_eventbridge_client.create_schedule.call_args_list
+
+        # Primary: SGT scrape_time (10:00) shifted -8h for EventBridge at() (UTC)
+        primary = calls[0].kwargs
+        assert primary["Name"] == "bidlysmu-pipeline-AY202627T1-R1W1"
+        assert primary["ScheduleExpression"] == "at(2026-07-06T02:00:00)"
+        primary_input = json.loads(primary["Target"]["Input"])
+        assert primary_input["retry_attempt"] == 0
+        assert primary_input["window"] == "R1W1"
+        assert primary_input["acad_term_id"] == "AY202627T1"
+
+        retry1 = calls[1].kwargs
+        assert retry1["Name"] == "bidlysmu-pipeline-AY202627T1-R1W1-retry1"
+        assert retry1["ScheduleExpression"] == "at(2026-07-06T04:00:00)"
+        assert json.loads(retry1["Target"]["Input"])["retry_attempt"] == 1
+
+        retry2 = calls[2].kwargs
+        assert retry2["Name"] == "bidlysmu-pipeline-AY202627T1-R1W1-retry2"
+        assert retry2["ScheduleExpression"] == "at(2026-07-06T06:00:00)"
+        assert json.loads(retry2["Target"]["Input"])["retry_attempt"] == 2
 
 
 # ==============================================================================
@@ -459,14 +555,14 @@ class TestBiddingScheduleManager:
 
         existing = {}
         new_events = [
-            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
-            BossEvent(term="2026-27_T1", start_dt="2026-07-10T14:00:00", abbrev="R1AW1", title="Round 1A Window 1", is_results=True),
+            BossEvent(term="AY202627T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="AY202627T1", start_dt="2026-07-10T14:00:00", abbrev="R1AW1", title="Round 1A Window 1", is_results=True),
         ]
 
         result = manager.merge_with_deduplication(existing, new_events)
 
-        assert "2026-27_T1" in result
-        assert len(result["2026-27_T1"]) == 2
+        assert "AY202627T1" in result
+        assert len(result["AY202627T1"]) == 2
 
     def test_merge_skips_duplicates(self, mock_supabase_client, sample_bidding_schedules):
         """Should skip events that already exist."""
@@ -474,28 +570,32 @@ class TestBiddingScheduleManager:
         manager = lambda_module.BiddingScheduleManager(mock_supabase_client)
 
         new_events = [
-            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
-            BossEvent(term="2026-27_T1", start_dt="2026-07-15T14:00:00", abbrev="R1BW1", title="Round 1B Window 1", is_results=True),
+            BossEvent(term="AY202627T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="AY202627T1", start_dt="2026-07-15T14:00:00", abbrev="R1BW1", title="Round 1B Window 1", is_results=True),
         ]
 
+        # Capture the count BEFORE merging — merge_with_deduplication appends to
+        # the existing list (a shallow copy shares the inner list with the fixture).
+        original_count = len(sample_bidding_schedules["AY202627T1"])
         result = manager.merge_with_deduplication(sample_bidding_schedules.copy(), new_events)
 
-        assert len(result["2026-27_T1"]) == len(sample_bidding_schedules["2026-27_T1"]) + 1
+        assert len(result["AY202627T1"]) == original_count + 1
+        assert result["AY202627T1"][-1][2] == "R1BW1"
 
     def test_merge_sorts_by_datetime(self, mock_supabase_client):
         """Should sort events by datetime within each term."""
         lambda_module = _load_lambda_module()
         manager = lambda_module.BiddingScheduleManager(mock_supabase_client)
 
-        existing = {"2026-27_T1": [["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"]]}
+        existing = {"AY202627T1": [["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"]]}
         new_events = [
-            BossEvent(term="2026-27_T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
+            BossEvent(term="AY202627T1", start_dt="2026-07-08T14:00:00", abbrev="R1W1", title="Round 1 Window 1", is_results=True),
         ]
 
         result = manager.merge_with_deduplication(existing, new_events)
 
-        assert result["2026-27_T1"][0][2] == "R1W1"
-        assert result["2026-27_T1"][1][2] == "R1AW1"
+        assert result["AY202627T1"][0][2] == "R1W1"
+        assert result["AY202627T1"][1][2] == "R1AW1"
 
 
 # ==============================================================================
@@ -511,8 +611,8 @@ class TestScheduleTracker:
         tracker = lambda_module.ScheduleTracker(mock_supabase_client)
 
         tracking = {
-            "2026-27_T1": {
-                "bidlysmu-pipeline-2026-27_T1-R1W1": {
+            "AY202627T1": {
+                "bidlysmu-pipeline-AY202627T1-R1W1": {
                     "created_at": "2026-05-01T10:00:00",
                     "scrape_time": "2026-06-22T10:00:00",
                     "results_datetime": "2026-07-08T14:00:00"
@@ -520,7 +620,7 @@ class TestScheduleTracker:
             }
         }
 
-        result = tracker.is_tracked(tracking, "2026-27_T1", "bidlysmu-pipeline-2026-27_T1-R1W1")
+        result = tracker.is_tracked(tracking, "AY202627T1", "bidlysmu-pipeline-AY202627T1-R1W1")
         assert result is True
 
     def test_is_tracked_false(self, mock_supabase_client):
@@ -528,9 +628,9 @@ class TestScheduleTracker:
         lambda_module = _load_lambda_module()
         tracker = lambda_module.ScheduleTracker(mock_supabase_client)
 
-        tracking = {"2026-27_T1": {}}
+        tracking = {"AY202627T1": {}}
 
-        result = tracker.is_tracked(tracking, "2026-27_T1", "nonexistent-schedule")
+        result = tracker.is_tracked(tracking, "AY202627T1", "nonexistent-schedule")
         assert result is False
 
     def test_add_to_tracking(self, mock_supabase_client):
@@ -542,12 +642,12 @@ class TestScheduleTracker:
         scrape_time = datetime(2026, 6, 22, 10, 0)
 
         result = tracker.add_to_tracking(
-            tracking, "2026-27_T1", "bidlysmu-pipeline-2026-27_T1-R1W1",
+            tracking, "AY202627T1", "bidlysmu-pipeline-AY202627T1-R1W1",
             scrape_time, "2026-07-08T14:00:00"
         )
 
-        assert "2026-27_T1" in result
-        assert "bidlysmu-pipeline-2026-27_T1-R1W1" in result["2026-27_T1"]
+        assert "AY202627T1" in result
+        assert "bidlysmu-pipeline-AY202627T1-R1W1" in result["AY202627T1"]
 
 
 # ==============================================================================
@@ -558,20 +658,21 @@ class TestCalculateScrapeTime:
     """Tests for calculate_scrape_time function from Lambda."""
 
     def test_first_window_scrape_time(self):
-        """First window (R1W1) should scrape 2 weeks before window starts."""
+        """First window (R1W1) should scrape 2 weeks before opens_at."""
         lambda_module = _load_lambda_module()
         windows = [
-            ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1"],
+            ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1", "2026-07-06T10:00:00", "2026-07-08T10:00:00"],
             ["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1"],
         ]
 
         result = lambda_module.calculate_scrape_time(windows, 0)
 
-        expected = datetime(2026, 6, 22, 14, 0)
+        # opens_at 2026-07-06 10:00 minus 2 weeks
+        expected = datetime(2026, 6, 22, 10, 0)
         assert result == expected
 
     def test_subsequent_window_scrape_time(self):
-        """Subsequent windows should scrape 3 hours after previous results."""
+        """Subsequent windows (legacy format) should scrape 1 hour after previous results."""
         lambda_module = _load_lambda_module()
         windows = [
             ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1"],
@@ -580,11 +681,11 @@ class TestCalculateScrapeTime:
 
         result = lambda_module.calculate_scrape_time(windows, 1)
 
-        expected = datetime(2026, 7, 8, 17, 0)
+        expected = datetime(2026, 7, 8, 15, 0)
         assert result == expected
 
     def test_third_window_scrape_time(self):
-        """Third window should scrape 3 hours after second results."""
+        """Third window (legacy format) should scrape 1 hour after second results."""
         lambda_module = _load_lambda_module()
         windows = [
             ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1"],
@@ -594,39 +695,20 @@ class TestCalculateScrapeTime:
 
         result = lambda_module.calculate_scrape_time(windows, 2)
 
-        expected = datetime(2026, 7, 10, 17, 0)
+        expected = datetime(2026, 7, 10, 15, 0)
         assert result == expected
 
 
-# ==============================================================================
-# Term Conversion Tests
-# ==============================================================================
-
-class TestConvertTermToAcadTermId:
-    """Tests for convert_term_to_acad_term_id function from Lambda."""
-
-    @pytest.mark.parametrize("term,expected", [
-        ("2026-27_T1", "AY202627T1"),
-        ("2025-26_T2", "AY202526T2"),
-        ("2025-26_T3A", "AY202526T3A"),
-        ("2025-26_T3B", "AY202526T3B"),
-        ("2024-25_T1", "AY202425T1"),
-        ("2026-27_T2", "AY202627T2"),
-    ])
-    def test_convert_valid_terms(self, term, expected):
-        """Should convert Truba term format to BOSS ACAD_TERM_ID format."""
+    def test_subsequent_window_extended_format_uses_opens_at(self):
+        """Subsequent windows with extended format should scrape 1 hour before opens_at."""
         lambda_module = _load_lambda_module()
-        result = lambda_module.convert_term_to_acad_term_id(term)
+        windows = [
+            ["2026-07-08T14:00:00", "Round 1 Window 1", "R1W1", "2026-07-06T10:00:00", "2026-07-08T10:00:00"],
+            ["2026-07-10T14:00:00", "Round 1A Window 1", "R1AW1", "2026-07-08T17:00:00", "2026-07-10T10:00:00"],
+        ]
+
+        result = lambda_module.calculate_scrape_time(windows, 1)
+
+        # opens_at 17:00 - 1h
+        expected = datetime(2026, 7, 8, 16, 0)
         assert result == expected
-
-    def test_convert_already_correct_format(self):
-        """Should return as-is if already in correct format."""
-        lambda_module = _load_lambda_module()
-        result = lambda_module.convert_term_to_acad_term_id("AY202526T3A")
-        assert result == "AY202526T3A"
-
-    def test_convert_unknown_format(self):
-        """Should return as-is for unknown formats."""
-        lambda_module = _load_lambda_module()
-        result = lambda_module.convert_term_to_acad_term_id("unknown_format")
-        assert result == "unknown_format"

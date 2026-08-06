@@ -6,7 +6,6 @@ from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from src.pipeline.dtos.timing_dto import ClassTimingDTO
-from src.pipeline.dtos.class_dto import ClassDTO
 
 
 class ClassTimingProcessor:
@@ -15,13 +14,11 @@ class ClassTimingProcessor:
     def __init__(
         self,
         raw_data: pd.DataFrame,
-        class_lookup: Dict[Tuple, 'ClassDTO'],
         record_key_to_class_ids: Dict[str, List[str]] = None,
         existing_class_timing_keys: Set[Tuple] = None,
         logger: Optional[object] = None
     ):
         self._raw_data = raw_data
-        self._class_lookup = class_lookup
         self._record_key_to_class_ids = record_key_to_class_ids or {}
         self._existing_class_timing_keys = existing_class_timing_keys or set()
         self._logger = logger
@@ -57,7 +54,6 @@ class ClassTimingProcessor:
         """
         if not record_key or pd.isna(record_key):
             return []
-
         return self._record_key_to_class_ids.get(record_key, [])
 
     def _process_class_timing(self, row: dict, class_id: str) -> None:

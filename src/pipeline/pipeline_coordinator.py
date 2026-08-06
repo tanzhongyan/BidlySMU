@@ -5,11 +5,10 @@ Sequentially calls processors and collects results as DTOs.
 import os
 import csv
 import pandas as pd
-import pickle
 from datetime import datetime
 from typing import List
 
-from src.config import ACAD_TERM_ID, RESULTS_DATETIME, dash_format_to_acad_term_id, encode_subterm_for_boss_id
+from src.config import ACAD_TERM_ID, RESULTS_DATETIME, encode_subterm_for_boss_id
 from src.logging.logger import get_logger
 from src.db.database_helper import DatabaseHelper
 from src.db.adapters import Psycopg2Adapter
@@ -60,6 +59,8 @@ class PipelineCoordinator:
         self.config = config
         self._logger = get_logger(__name__)
         self.results = {}
+        # Compute once in __init__ and reuse.
+        self.expected_acad_term_id = self.config.start_ay_term  # already AY
 
         os.makedirs(self.config.output_base, exist_ok=True)
         os.makedirs(self.config.verify_dir, exist_ok=True)
@@ -81,26 +82,26 @@ class PipelineCoordinator:
         # Cache keys are plural — they match self.results keys so that
         # _build_lookup / _build_composite_lookup can use the same name
         # for both cache and results lookups.
+        # Values are base filenames (no extension); parquet is the cache format.
         cache_files = {
-            'acad_terms': 'acad_term_cache.pkl',
-            'courses': 'courses_cache.pkl',
-            'professors': 'professors_cache.pkl',
-            'faculties': 'faculties_cache.pkl',
-            'bid_windows': 'bid_window_cache.pkl',
-            'classes': 'classes_cache.pkl',
-            'class_timings': 'class_timing_cache.pkl',
-            'class_exam_timings': 'class_exam_timing_cache.pkl',
-            'bid_results': 'bid_result_cache.pkl',
-            'class_availabilities': 'class_availability_cache.pkl',
+            'acad_terms': 'acad_term_cache',
+            'courses': 'courses_cache',
+            'professors': 'professors_cache',
+            'faculties': 'faculties_cache',
+            'bid_windows': 'bid_window_cache',
+            'classes': 'classes_cache',
+            'class_timings': 'class_timing_cache',
+            'class_exam_timings': 'class_exam_timing_cache',
+            'bid_results': 'bid_result_cache',
+            'class_availabilities': 'class_availability_cache',
         }
 
         tables_to_download = []
-        for cache_name, filename in cache_files.items():
-            filepath = os.path.join(self.config.cache_dir, filename)
-            if os.path.exists(filepath):
-                with open(filepath, 'rb') as f:
-                    df = pickle.load(f)
-                    self.db_cache[cache_name] = df
+        for cache_name, base_filename in cache_files.items():
+            paths = DatabaseHelper.cache_paths(self.config.cache_dir, base_filename)
+            if os.path.exists(paths['parquet']):
+                df = DatabaseHelper.read_cache(self.config.cache_dir, base_filename, self._logger)
+                self.db_cache[cache_name] = df
                 self._logger.info(f"Loaded {cache_name} cache: {len(self.db_cache[cache_name])} entries")
             else:
                 tables_to_download.append(cache_name)
@@ -120,12 +121,10 @@ class PipelineCoordinator:
                 self._logger
             )
             for cache_name in tables_to_download:
-                filename = cache_files[cache_name]
-                filepath = os.path.join(self.config.cache_dir, filename)
-                if os.path.exists(filepath):
-                    with open(filepath, 'rb') as f:
-                        df = pickle.load(f)
-                        self.db_cache[cache_name] = df
+                base_filename = cache_files[cache_name]
+                df = DatabaseHelper.read_cache(self.config.cache_dir, base_filename, self._logger)
+                if df is not None:
+                    self.db_cache[cache_name] = df
                     self._logger.info(f"Loaded {cache_name} cache: {len(self.db_cache[cache_name])} entries")
                 else:
                     raise RuntimeError(f"Failed to download {cache_name} cache from database")
@@ -290,22 +289,22 @@ class PipelineCoordinator:
         acad_terms_new, acad_terms_updated = acad_term_processor.process()
 
         # Fallback: ensure current term exists even if not in scraped data
-        expected_acad_term_id = dash_format_to_acad_term_id(self.config.start_ay_term)
+        expected_acad_term_id = self.expected_acad_term_id
         existing_ids = {t.id for t in acad_terms_new}
         acad_cache = self.db_cache.get('acad_terms', {})
         db_ids = set(acad_cache.keys()) if isinstance(acad_cache, dict) else set()
 
         if expected_acad_term_id not in existing_ids and expected_acad_term_id not in db_ids:
-            # Parse from start_ay_term format "2026-27_T1" -> year_start=2026, year_end=27, term_num=1
+            # Parse from AY format "AY202627T1" -> year_start=2026, year_end=27, term=1
             import re
-            m = re.match(r'(\d{4})-(\d{2})_T(\d+)([AB]?)', self.config.start_ay_term)
+            m = re.match(r'^AY(\d{4})(\d{2})T(\d+[AB]?)', self.config.start_ay_term)
             if m:
                 y_start = int(m.group(1))
                 y_end = int(m.group(2))
-                t_num = m.group(3) + m.group(4)
+                t_num = m.group(3)
                 # boss_id uses start year prefix (BOSS convention), with sub-term encoding
                 sub = encode_subterm_for_boss_id(t_num)
-                boss_id = int(f"{y_start}{m.group(3)}{sub}")
+                boss_id = int(f"{y_start}{t_num[0]}{sub}")
                 # Note: start_dt/end_dt are set to None — bidding schedule dates are
                 # results release timestamps, not academic term boundaries.
                 fallback_term = AcadTermDTO(
@@ -351,7 +350,7 @@ class PipelineCoordinator:
         bid_window_processor = BidWindowProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
             bid_window_cache=self.db_cache.get('bid_windows', {}),
-            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+            expected_acad_term_id=self.expected_acad_term_id,
             bidding_schedules=self.config.bidding_schedules,
             results_datetime=RESULTS_DATETIME,
             logger=self._logger
@@ -426,7 +425,6 @@ class PipelineCoordinator:
         existing_timing_keys = self.db_cache.get('class_timings', set())
         class_timing_processor = ClassTimingProcessor(
             raw_data=self.raw_data[SHEET_MULTIPLE],
-            class_lookup=self.results['class_lookup'],
             record_key_to_class_ids=record_key_to_class_ids,
             existing_class_timing_keys=existing_timing_keys,
             logger=self._logger
@@ -439,7 +437,6 @@ class PipelineCoordinator:
         existing_exam_class_ids = self.db_cache.get('class_exam_timings', set())
         class_exam_timing_processor = ClassExamTimingProcessor(
             raw_data=self.raw_data[SHEET_MULTIPLE],
-            class_lookup=self.results['class_lookup'],
             record_key_to_class_ids=record_key_to_class_ids,
             processed_exam_class_ids=existing_exam_class_ids,
             logger=self._logger
@@ -448,17 +445,12 @@ class PipelineCoordinator:
         self.results['class_exam_timings'] = new_exam_timings
         self._logger.info(f"✅ Processed {len(new_exam_timings)} exam timings")
 
-        # Get bidding schedule for availability and bid results
-        # Note: self.config.start_ay_term is already in dash format (START_AY_TERM from config)
-        bidding_schedule = self.config.bidding_schedules.get(self.config.start_ay_term, [])
-
         # Process class availability (current window only)
         class_avail_processor = ClassAvailabilityProcessor(
             raw_data=self.raw_data[SHEET_STANDALONE],
             class_lookup=self.results['class_lookup'],
             bid_window_lookup=self.results['bid_window_lookup'],
-            bidding_schedule=bidding_schedule,
-            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+            expected_acad_term_id=self.expected_acad_term_id,
             existing_availability_keys=self.db_cache.get('class_availabilities', set()),
             logger=self._logger
         )
@@ -475,8 +467,7 @@ class PipelineCoordinator:
             bid_window_lookup=self.results['bid_window_lookup'],
             course_lookup=self.results['course_lookup'],
             existing_bid_result_keys=self.db_cache.get('bid_results', set()),
-            bidding_schedule=bidding_schedule,
-            expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
+            expected_acad_term_id=self.expected_acad_term_id,
             logger=self._logger
         )
         bid_results_new, bid_results_updated = bid_result_processor.process()
@@ -493,8 +484,6 @@ class PipelineCoordinator:
                 class_lookup=self.results['class_lookup'],
                 bid_window_lookup=self.results['bid_window_lookup'],
                 multiple_lookup=self._multiple_lookup,
-                bidding_schedule=bidding_schedule,
-                expected_acad_term_id=dash_format_to_acad_term_id(self.config.start_ay_term),
                 model_dir='models',
                 logger=self._logger
             )
@@ -513,7 +502,10 @@ class PipelineCoordinator:
                 self.results['safety_factors'] = safety_factors
                 self._logger.info(f"✅ Generated {len(safety_factors)} safety factor entries")
         except Exception as e:
-            self._logger.error(f"Phase 3 (predictions) failed — saving Phase 1-2 results anyway: {e}")
+            self._logger.error(
+                f"Phase 3 (predictions) failed — saving Phase 1-2 results anyway. "
+                f"Reason: {type(e).__name__}: {e}"
+            )
 
         # Save results to CSV and database
         self._logger.info("💾 Saving results...")
@@ -691,9 +683,11 @@ class PipelineCoordinator:
         Uses dedicated overall_results_dir config instead of deriving
         from input_file, so the path is stable regardless of input_file location.
         """
+        # AY-format term keeps the filename consistent with classTimingsFull/
+        # and output/ (AY term everywhere): input/overallBossResults/AY202526T1.xlsx
         return os.path.join(
             self.config.overall_results_dir,
-            self.config.start_ay_term + '.xlsx'
+            self.expected_acad_term_id + '.xlsx'
         )
 
     def _write_csv(self, filename: str, dtos: list, log_message: str):
@@ -783,7 +777,12 @@ class PipelineCoordinator:
                             f"✅ Saved {{count}} safety factors to {{filename}}")
 
     def save_to_database(self):
-        """Persist results to PostgreSQL database."""
+        """Persist results to PostgreSQL database in a single transaction.
+
+        All inserts/updates run in one transaction; it is committed once after
+        every table is written and rolled back on any failure — no partial writes.
+        Per-table ``ON CONFLICT DO NOTHING`` idempotency is preserved.
+        """
         if self._db_connection is None:
             self._logger.warning("No database connection - skipping database save")
             return
@@ -797,34 +796,36 @@ class PipelineCoordinator:
             'class_availabilities': ['class_id', 'bid_window_id'],
         }
 
-        for result_key, table_name in tables:
-            if result_key not in self.results:
-                continue
-
-            data = self.results[result_key]
-            if isinstance(data, dict):
-                # Has 'new' and 'updated' keys
-                if data.get('new'):
-                    df = pd.DataFrame([d.to_db_row() for d in data['new']])
-                    on_conflict = (result_key in ('bid_results', 'safety_factors'))
-                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
-                                             on_conflict_do_nothing=on_conflict)
-                if data.get('updated'):
-                    df = pd.DataFrame([d.to_db_row() for d in data['updated']])
-                    index_elements = _UPDATE_KEY_MAP.get(result_key, ['id'])
-                    DatabaseHelper.update_df(self._db_connection, df, table_name, index_elements, self._logger)
-            else:
-                # List of DTOs (INSERT only)
-                if data:
-                    df = pd.DataFrame([d.to_db_row() for d in data])
-                    # safety_factors are generated once per semester — skip if already present
-                    on_conflict = (result_key in ('safety_factors', 'class_availabilities', 'bid_predictions'))
-                    DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
-                                             on_conflict_do_nothing=on_conflict)
-
         try:
+            for result_key, table_name in tables:
+                if result_key not in self.results:
+                    continue
+
+                data = self.results[result_key]
+                if isinstance(data, dict):
+                    # Has 'new' and 'updated' keys
+                    if data.get('new'):
+                        df = pd.DataFrame([d.to_db_row() for d in data['new']])
+                        on_conflict = (result_key in ('bid_results', 'safety_factors'))
+                        DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
+                                                 on_conflict_do_nothing=on_conflict, commit=False)
+                    if data.get('updated'):
+                        df = pd.DataFrame([d.to_db_row() for d in data['updated']])
+                        index_elements = _UPDATE_KEY_MAP.get(result_key, ['id'])
+                        DatabaseHelper.update_df(self._db_connection, df, table_name, index_elements,
+                                                 self._logger, commit=False)
+                else:
+                    # List of DTOs (INSERT only)
+                    if data:
+                        df = pd.DataFrame([d.to_db_row() for d in data])
+                        # safety_factors are generated once per semester — skip if already present
+                        on_conflict = (result_key in ('safety_factors', 'class_availabilities', 'bid_predictions'))
+                        DatabaseHelper.insert_df(self._db_connection, df, table_name, self._logger,
+                                                 on_conflict_do_nothing=on_conflict, commit=False)
+
+            # Single commit after all tables succeed
             self._db_connection.commit()
             self._logger.info("✅ Committed all results to database")
         except Exception as e:
-            self._logger.error(f"Failed to commit to database: {e}")
+            self._logger.error(f"Database save failed — rolling back transaction: {e}")
             self._db_connection.rollback()

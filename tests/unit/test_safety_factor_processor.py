@@ -35,14 +35,23 @@ class TestSafetyFactorProcessor:
         )
         assert processor._cache_dir == 'custom_cache'
 
-    def test_process_returns_list(self):
+    def test_process_returns_list(self, tmp_path):
         """process() should return a list of SafetyFactorDTOs."""
-        processor = SafetyFactorProcessor(
-            expected_acad_term_id='AY202526T1',
-            logger=Mock()
-        )
-        result = processor.process()
-        assert isinstance(result, list)
+        with patch('src.pipeline.processors.safety_factor_processor.SafetyFactorCalculator') as mock_calculator_class:
+            mock_calculator = MagicMock()
+            mock_calculator.create_safety_factor_table.return_value = pd.DataFrame()
+            mock_calculator_class.return_value = mock_calculator
+
+            # Use an isolated cache dir so the test doesn't depend on (or pollute)
+            # the repo's db_cache/safety_factors_cache.pkl, which would otherwise
+            # short-circuit process() via _already_exists().
+            processor = SafetyFactorProcessor(
+                expected_acad_term_id='AY202526T1',
+                cache_dir=str(tmp_path),
+                logger=Mock()
+            )
+            result = processor.process()
+            assert isinstance(result, list)
 
 
 class TestAlreadyExists:

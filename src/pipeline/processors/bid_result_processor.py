@@ -15,9 +15,10 @@ from src.pipeline.dtos.bid_result_dto import BidResultDTO
 from src.pipeline.dtos.bid_window_dto import BidWindowDTO
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.course_dto import CourseDTO
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 
 
-class BidResultProcessor:
+class BidResultProcessor(AbstractProcessor):
     """Processes bid result records from standalone and overall results data."""
 
     def __init__(
@@ -28,7 +29,6 @@ class BidResultProcessor:
         bid_window_lookup: Dict[Tuple, 'BidWindowDTO'],
         course_lookup: Dict[str, 'CourseDTO'] = None,
         existing_bid_result_keys: Set[Tuple] = None,
-        bidding_schedule: List[Tuple] = None,
         expected_acad_term_id: str = None,
         logger: Optional[object] = None
     ):
@@ -38,9 +38,8 @@ class BidResultProcessor:
         self._bid_window_lookup = bid_window_lookup
         self._course_lookup = course_lookup or {}
         self._existing_bid_result_keys = existing_bid_result_keys or set()
-        self._bidding_schedule = bidding_schedule or []
         self._expected_acad_term_id = expected_acad_term_id
-        self._logger = logger
+        super().__init__(logger)
         self._new_bid_results: List['BidResultDTO'] = []
         self._updated_bid_results: List['BidResultDTO'] = []
 
@@ -124,30 +123,17 @@ class BidResultProcessor:
         if not class_ids:
             return
 
-        median_bid = self._safe_float(row.get('Median Bid'))
-        min_bid = self._safe_float(row.get('Min Bid'))
-        vacancy = self._safe_int(row.get('Vacancy'))
-        opening_vacancy = self._safe_int(row.get('Opening Vacancy'))
-        before_process_vacancy = self._safe_int(row.get('Before Process Vacancy'))
-        dice = self._safe_int(row.get('D.I.C.E'))
-        after_process_vacancy = self._safe_int(row.get('After Process Vacancy'))
-        enrolled_students = self._safe_int(row.get('Enrolled Students'))
+        median_bid = AbstractProcessor.safe_float(row.get('Median Bid'))
+        min_bid = AbstractProcessor.safe_float(row.get('Min Bid'))
+        vacancy = AbstractProcessor.safe_int(row.get('Vacancy'))
+        opening_vacancy = AbstractProcessor.safe_int(row.get('Opening Vacancy'))
+        before_process_vacancy = AbstractProcessor.safe_int(row.get('Before Process Vacancy'))
+        dice = AbstractProcessor.safe_int(row.get('D.I.C.E'))
+        after_process_vacancy = AbstractProcessor.safe_int(row.get('After Process Vacancy'))
+        enrolled_students = AbstractProcessor.safe_int(row.get('Enrolled Students'))
 
         for class_id in class_ids:
             bid_result_key = (bid_window_dto.id, class_id)
-
-            result_data = {
-                'bid_window_id': bid_window_dto.id,
-                'class_id': class_id,
-                'vacancy': vacancy,
-                'opening_vacancy': opening_vacancy,
-                'before_process_vacancy': before_process_vacancy,
-                'd_i_c_e': dice,
-                'after_process_vacancy': after_process_vacancy,
-                'enrolled_students': enrolled_students,
-                'median': median_bid,
-                'min': min_bid,
-            }
 
             if bid_result_key in self._existing_bid_result_keys:
                 updated_dto = BidResultDTO(
@@ -198,17 +184,14 @@ class BidResultProcessor:
             self._logger.info("No 'bidding_window' column in raw data - skipping")
             return
 
-        # Convert abbrev to full format for matching ("R1W1" -> "Round 1 Window 1")
+        # Match against current, full, and legacy BOSS-prefixed formats + term filter
         full_format = abbrev_window_to_full(current_window_name)
-
-        # Match against current, full, and legacy BOSS-prefixed formats
         boss_format = f"BOSS {full_format}"
         current_window_data = self._raw_data[
             (self._raw_data['bidding_window'] == current_window_name) |
             (self._raw_data['bidding_window'] == full_format) |
             (self._raw_data['bidding_window'] == boss_format)
         ].copy()
-
         if 'acad_term_id' in current_window_data.columns and self._expected_acad_term_id:
             current_window_data = current_window_data[
                 current_window_data['acad_term_id'] == self._expected_acad_term_id
@@ -241,8 +224,8 @@ class BidResultProcessor:
         if not class_ids:
             return
 
-        total_val = self._safe_int(row.get('total'))
-        enrolled_val = self._safe_int(row.get('current_enrolled'))
+        total_val = AbstractProcessor.safe_int(row.get('total'))
+        enrolled_val = AbstractProcessor.safe_int(row.get('current_enrolled'))
 
         for class_id in class_ids:
             bid_result_key = (bid_window_dto.id, class_id)
@@ -257,10 +240,10 @@ class BidResultProcessor:
                 class_id=class_id,
                 bid_window_id=bid_window_dto.id,
                 vacancy=total_val,
-                opening_vacancy=self._safe_int(row.get('opening_vacancy')),
+                opening_vacancy=AbstractProcessor.safe_int(row.get('opening_vacancy')),
                 before_process_vacancy=before_process,
-                d_i_c_e=self._safe_int(row.get('d_i_c_e') or row.get('dice')),
-                after_process_vacancy=self._safe_int(row.get('after_process_vacancy')),
+                d_i_c_e=AbstractProcessor.safe_int(row.get('d_i_c_e') or row.get('dice')),
+                after_process_vacancy=AbstractProcessor.safe_int(row.get('after_process_vacancy')),
                 enrolled_students=enrolled_val,
                 median=None,
                 min_bid=None
@@ -271,7 +254,7 @@ class BidResultProcessor:
     def _find_all_class_ids(self, acad_term_id: str, class_boss_id) -> List[str]:
         """Find all class IDs for a given acad_term_id and boss_id."""
         class_ids = []
-        for (term_id, boss_id, professor_id), class_dto in self._class_lookup.items():
+        for (term_id, boss_id, _professor_id), class_dto in self._class_lookup.items():
             if term_id == acad_term_id and boss_id == class_boss_id:
                 class_ids.append(class_dto.id)
         return class_ids
@@ -292,23 +275,5 @@ class BidResultProcessor:
             if term_id == acad_term_id and class_dto.course_id == course_id and class_dto.section == section:
                 class_ids.append(class_dto.id)
         return class_ids
-
-    def _safe_int(self, val) -> Optional[int]:
-        """Safely convert value to int."""
-        if pd.isna(val):
-            return None
-        try:
-            return int(val)
-        except (ValueError, TypeError):
-            return None
-
-    def _safe_float(self, val) -> Optional[float]:
-        """Safely convert value to float."""
-        if pd.isna(val):
-            return None
-        try:
-            return float(val)
-        except (ValueError, TypeError):
-            return None
 
     

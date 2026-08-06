@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional, Protocol
 
-from src.config import ROUND_ORDER
+from src.config import ROUND_ORDER, SGT, _parse_sgt, parse_bidding_window, build_window_abbrev
 
 
 @dataclass(frozen=True)
@@ -57,10 +57,9 @@ class BossEvent:
         }
 
     def to_schedule_entry(self) -> list:
-        """Convert to legacy schedule entry format for backward compatibility.
+        """Convert to the canonical schedule entry format: `[results_at, title, abbrev, opens_at, closes_at]`.
 
         Uses start_dt as results_at for results events.
-        Extended format: [results_at, title, abbrev, opens_at, closes_at]
         opens_at/closes_at are None for raw BossEvent (only BossWindow has them).
         """
         return [self.start_dt, self.title, self.abbrev, None, None]
@@ -88,10 +87,10 @@ class BossWindow:
         }
 
     def to_schedule_entry(self) -> list:
-        """Convert to legacy schedule entry format for backward compatibility.
+        """Convert to the canonical schedule entry format: `[results_at, title, abbrev, opens_at, closes_at]`.
 
-        Extended format: [results_at, title, abbrev, opens_at, closes_at]
-        Old code reading index 0-2 still works; new code reads 3-4 for opens/closes.
+        results_at is the results-release timestamp; opens_at/closes_at are the
+        actual window open/close dates.
         """
         return [self.results_at, self.title, self.abbrev, self.opens_at, self.closes_at]
 
@@ -138,7 +137,7 @@ class TrubaClient:
         Raises:
             requests.RequestException: If HTTP request fails
         """
-        today = datetime.now()
+        today = datetime.now(SGT)
         start_date = today.strftime("%Y%m%d")
 
         url = f"{self._config.api_url}?startdate={start_date}&months={self._config.months_ahead}"
@@ -197,6 +196,10 @@ class TrubaClient:
         results_by_key: Dict[str, BossEvent] = {}
 
         for event in all_events:
+            if not event.abbrev:
+                # Skip events whose round/window couldn't be parsed (e.g.
+                # BOSS-named events that aren't bid windows).
+                continue
             key = f"{event.term}|{event.abbrev}"
             if event.is_results:
                 results_by_key[key] = event
@@ -254,36 +257,36 @@ class TrubaClient:
             start_str = event_data.get("startDateTime")
             end_str = event_data.get("endDateTime")
 
-            # Parse start datetime (always present)
-            if start_str:
-                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            else:
+            # Parse start datetime (always present); normalize to SGT
+            if not start_str:
                 return None
+            start_dt = _parse_sgt(start_str)
 
             # Parse end datetime (present for Window events, may be absent for Results)
-            end_dt = None
-            if end_str:
-                end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
+            end_dt = _parse_sgt(end_str) if end_str else None
 
             is_results = "RESULTS" in title.upper()
 
             # Extract term
             term = self._extract_term(event_data)
 
-            # Parse round/window from title
-            round_info, window_info = self._parse_title(title)
-            abbrev = f"{round_info}{window_info}"
+            # Parse round/window from title (None when not a bid window)
+            abbrev = self._parse_title(title)
+            if abbrev is None:
+                return None
 
-            # Clean title (remove "Results" suffix for consistency)
-            clean_title = title.replace(" Results", "").strip()
+            # Clean title (remove "Results" suffix and "BOSS " prefix for consistency)
+            clean_title = title.replace(" Results", "").replace("BOSS ", "", 1).strip()
 
+            # Persist SGT wall-clock WITHOUT tzinfo — bidding_schedules.json
+            # stores naive SGT wall-clock datetimes.
             return BossEvent(
                 term=term,
                 abbrev=abbrev,
                 title=clean_title,
                 is_results=is_results,
-                start_dt=start_dt.isoformat(),
-                end_dt=end_dt.isoformat() if end_dt else None,
+                start_dt=start_dt.astimezone(SGT).replace(tzinfo=None).isoformat(),
+                end_dt=end_dt.astimezone(SGT).replace(tzinfo=None).isoformat() if end_dt else None,
             )
 
         except Exception:
@@ -297,7 +300,7 @@ class TrubaClient:
             event_data: Event dictionary from API
 
         Returns:
-            Term identifier (e.g., "2026-27_T1")
+            Term identifier (e.g., "AY202627T1")
         """
         try:
             custom_fields = event_data.get("customFields", [])
@@ -318,7 +321,7 @@ class TrubaClient:
                         if len(end_year) == 4:
                             end_year = end_year[-2:]
                         term_num = match.group(3)
-                        return f"{start_year}-{end_year}_T{term_num}"
+                        return f"AY{start_year}{end_year}T{term_num}"
 
         except Exception:
             pass
@@ -336,53 +339,41 @@ class TrubaClient:
         - Term 3: May - July (Term 3A/3B)
 
         Returns:
-            Term identifier (e.g., "2025-26_T3A")
+            Term identifier (e.g., "AY202526T3A")
         """
-        now = datetime.now()
+        now = datetime.now(SGT)
         year = now.year
 
         if now.month >= 8:
-            return f"{year}-{(year+1) % 100:02d}_T1"
+            return f"AY{year}{(year+1) % 100:02d}T1"
         elif now.month >= 1 and now.month <= 4:
-            return f"{year-1}-{year % 100:02d}_T2"
+            return f"AY{year-1}{year % 100:02d}T2"
         elif now.month == 5:
-            return f"{year-1}-{year % 100:02d}_T3A"
+            return f"AY{year-1}{year % 100:02d}T3A"
         else:
-            return f"{year-1}-{year % 100:02d}_T3B"
+            return f"AY{year-1}{year % 100:02d}T3B"
 
-    def _parse_title(self, title: str) -> tuple:
+    def _parse_title(self, title: str) -> Optional[str]:
         """
-        Parse BOSS event title to extract round and window abbreviations.
+        Parse BOSS event title into a window abbrev (e.g. "R1AW2"), or None.
 
-        Handles:
-        - Regular rounds: "BOSS Round 1A Window 1 Results" -> ("R1A", "W1")
-        - Incoming Exchange: "BOSS Incoming Exchange Round 1C Window 1" -> ("R1C", "W1")
-        - Incoming Freshmen: "BOSS Incoming Freshmen Round 1 Window 1" -> ("R1F", "W1")
+        Uses the canonical config helpers (parse_bidding_window +
+        build_window_abbrev) so round/window vocabulary matches the rest of
+        the codebase. Handles:
+        - Regular rounds: "BOSS Round 1A Window 1 Results" -> "R1AW1"
+        - Incoming Exchange: "BOSS Incoming Exchange Round 1C Window 1" -> "R1CW1"
+        - Incoming Freshmen: "BOSS Incoming Freshmen Round 1 Window 1" -> "R1FW1"
+
+        Returns None for titles that are not a bid window (e.g. "BOSS Course
+        Registration") instead of a bogus "R1W1" that would alias real windows.
 
         Args:
             title: Event title (e.g., "BOSS Round 1A Window 1 Results")
 
         Returns:
-            tuple: (round_abbrev, window_abbrev) e.g., ("R1A", "W1")
+            Abbreviated window key (e.g. "R1AW2") or None if unparseable.
         """
-        match = re.search(
-            r"Round\s+(\d+)([A-C]?)\s+Window\s+(\d+)",
-            title,
-            re.IGNORECASE
-        )
-
-        if match:
-            round_num = match.group(1)
-            round_suffix = match.group(2).upper() if match.group(2) else ""
-            window_num = match.group(3)
-
-            # Add distinguishing suffix for Incoming events to prevent
-            # collision with regular bidding rounds (e.g., Incoming Freshmen
-            # Round 1 vs regular Round 1 both map to R1W1 otherwise)
-            if "Incoming" in title:
-                if "Freshmen" in title and not round_suffix:
-                    round_suffix = "F"
-
-            return (f"R{round_num}{round_suffix}", f"W{window_num}")
-
-        return ("R1", "W1")
+        round_str, window_num = parse_bidding_window(title, allow_abbrev=True)
+        if round_str is None or window_num is None:
+            return None
+        return build_window_abbrev(round_str, window_num)

@@ -7,7 +7,6 @@ from typing import List, Optional
 import os
 from pathlib import Path
 
-from src.config import ACAD_TERM_ID
 from src.pipeline.dtos.bid_prediction_dto import SafetyFactorDTO
 from src.pipeline.safety_factor_calculator import SafetyFactorCalculator
 

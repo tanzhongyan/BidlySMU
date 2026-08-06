@@ -36,7 +36,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from src.scraper.abstract_scraper import AbstractScraper, StaleElementError
 from src.driver.authenticator import Authenticator
 from src.scraper.dtos.scraping_result import ScrapingResult, ScraperError, ErrorType
-from src.config import START_AY_TERM, ACAD_TERM_SHORT
+from src.config import ACAD_TERM_ID, ACAD_TERM_SHORT
 
 
 @dataclass(frozen=True)
@@ -45,15 +45,16 @@ class ClassScraperConfig:
     Configuration for ClassScraper - ALL dependencies explicit.
 
     bidding_schedules is REQUIRED to determine folder naming.
-    start_ay_term is the academic term in dash format (e.g., '2025-26_T3A') from config.START_AY_TERM.
+    start_ay_term is the academic term in AY format (e.g., 'AY202627T1') from config.ACAD_TERM_ID.
     """
     bidding_schedules: dict  # REQUIRED - no default!
-    start_ay_term: str = ''  # Dash format from config.START_AY_TERM
+    start_ay_term: str = ''  # AY format from config.ACAD_TERM_ID
     min_class_number: int = 1000
     max_class_number: int = 5000
     consecutive_empty_threshold: int = 300
     base_url: str = "https://boss.intranet.smu.edu.sg"
     delay_between_requests: float = 1.0
+    timeout: int = 30
     max_retries: int = 3
     headless: bool = True
 
@@ -66,8 +67,8 @@ class ClassScraper(AbstractScraper):
     Login is handled separately via Authenticator injection.
 
     Usage:
-        from src.config import BIDDING_SCHEDULES, START_AY_TERM
-        config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM)
+        from src.config import BIDDING_SCHEDULES, ACAD_TERM_ID
+        config = ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=ACAD_TERM_ID)
         scraper = ClassScraper(config=config)
         result = scraper.scrape(acad_term_id="AY202526T3A")
     """
@@ -80,7 +81,7 @@ class ClassScraper(AbstractScraper):
     ):
         if config is None:
             raise ValueError(
-                "config is required. Use: ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=START_AY_TERM)"
+                "config is required. Use: ClassScraperConfig(bidding_schedules=BIDDING_SCHEDULES, start_ay_term=ACAD_TERM_ID)"
             )
         self._config = config
         super().__init__(
@@ -150,7 +151,7 @@ class ClassScraper(AbstractScraper):
         ay_term = acad_term_id
         self._logger.info(f"\nProcessing Academic Term: {ay_term}")
 
-        # Use start_ay_term from config (already in dash format from config.START_AY_TERM)
+        # Use start_ay_term from config (already in AY format from config.ACAD_TERM_ID)
         schedule_key = self._config.start_ay_term
 
         # Determine round folder name - inlined get_bidding_round_info_for_term logic
@@ -164,7 +165,9 @@ class ClassScraper(AbstractScraper):
                 # clean format ("Round 1A Window 1") from abbrev_window_to_full.
                 if (window_name == app_config.CURRENT_WINDOW_NAME or
                     app_config.abbrev_window_to_full(abbrev) == app_config.CURRENT_WINDOW_NAME):
-                    round_folder = f"{schedule_key}_{abbrev}"
+                    # Abbrev-only round folder matches the output/ convention:
+                    # classTimingsFull/AY202627T1/R1FW1
+                    round_folder = abbrev
                     break
 
         if not round_folder:
@@ -184,10 +187,10 @@ class ClassScraper(AbstractScraper):
 
         files_saved = 0
         try:
-            # Use START_AY_TERM directly (already in dash format from config)
+            # start_ay_term is AY format (e.g. 'AY202627T1'); used for logging only
             files_saved = self._scrape_range(
                 target_driver,
-                START_AY_TERM,
+                self._config.start_ay_term,
                 target_path,
             )
             total_files_saved += files_saved
@@ -218,7 +221,7 @@ class ClassScraper(AbstractScraper):
         Scrape all class numbers in configured range.
 
         Args:
-            ay_term: Academic term in dash format (e.g., '2025-26_T3A') - used for logging only
+            ay_term: Academic term in AY format (e.g., 'AY202627T1') - used for logging only
             output_dir: Directory to save HTML files
 
         Returns:

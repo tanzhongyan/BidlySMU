@@ -1,5 +1,9 @@
 """
-Unit tests for schedule_resolver utilities.
+Unit tests for parse_bidding_window() — alternate/older suite for the
+centralized bidding window text parser (src.config.parse_bidding_window).
+
+The canonical suite lives in test_parse_bidding_window.py; this file covers
+additional legacy-format variants of the same function.
 """
 from src.config import parse_bidding_window
 
@@ -166,3 +170,18 @@ class TestParseBiddingWindow:
         """Should handle extra spaces in input."""
         result = parse_bidding_window("  Round   1A   Window   3  ")
         assert result == ("1A", 3)
+
+
+class TestWindowNameResolutionFromEnv:
+    """CURRENT/PREVIOUS_WINDOW_NAME resolve to FULL names from abbrev env vars."""
+
+    def test_resolves_full_names_from_abbrev_env(self, monkeypatch):
+        import src.config as cfg
+        monkeypatch.setenv('TARGET_CURRENT_WINDOW', 'R1FW4')
+        monkeypatch.setenv('TARGET_PREVIOUS_WINDOW', 'R1FW3')
+        cfg._config_cache.pop('CURRENT_WINDOW_NAME', None)
+        cfg._config_cache.pop('PREVIOUS_WINDOW_NAME', None)
+        assert cfg.CURRENT_WINDOW_NAME == 'Round 1F Window 4'
+        assert cfg.PREVIOUS_WINDOW_NAME == 'Round 1F Window 3'
+        cfg._config_cache.pop('CURRENT_WINDOW_NAME', None)
+        cfg._config_cache.pop('PREVIOUS_WINDOW_NAME', None)

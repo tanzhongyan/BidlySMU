@@ -12,9 +12,10 @@ import pandas as pd
 from src.pipeline.dtos.class_dto import ClassDTO
 from src.pipeline.dtos.course_dto import CourseDTO
 from src.pipeline.processors.professor_resolution_service import ProfessorResolutionService
+from src.pipeline.processors.abstract_processor import AbstractProcessor
 
 
-class ClassProcessor:
+class ClassProcessor(AbstractProcessor):
     """Processes class records with proper professor transition handling."""
 
     def __init__(
@@ -31,7 +32,7 @@ class ClassProcessor:
         self._course_lookup = course_lookup
         self._professor_resolution_service = professor_resolution_service
         self._existing_classes_cache = existing_classes_cache
-        self._logger = logger
+        super().__init__(logger)
 
         # New group-based data structures for reconciliation
         # {(acad_term_id, boss_id): [class_records]}
@@ -87,7 +88,10 @@ class ClassProcessor:
             acad_term_id = c.get('acad_term_id')
             boss_id = c.get('boss_id')
             if acad_term_id and boss_id is not None:
-                key = (acad_term_id, int(boss_id))
+                boss_id_int = AbstractProcessor.safe_int(boss_id)
+                if boss_id_int is None:
+                    continue
+                key = (acad_term_id, boss_id_int)
                 if key not in self._existing_classes_by_group:
                     self._existing_classes_by_group[key] = []
                 self._existing_classes_by_group[key].append(c)
@@ -108,7 +112,10 @@ class ClassProcessor:
             if pd.isna(acad_term_id) or pd.isna(class_boss_id) or not record_key:
                 continue
 
-            group_key = (acad_term_id, int(class_boss_id))
+            class_boss_id_int = AbstractProcessor.safe_int(class_boss_id)
+            if class_boss_id_int is None:
+                continue
+            group_key = (acad_term_id, class_boss_id_int)
 
             # Build raw_data index for O(1) lookup during reconciliation
             if group_key not in self._raw_data_by_group:
@@ -286,7 +293,7 @@ class ClassProcessor:
         fields_to_check = {
             'grading_basis': row.get('grading_basis') if not pd.isna(row.get('grading_basis')) else None,
             'course_outline_url': row.get('course_outline_url'),
-            'boss_id': int(row.get('class_boss_id')) if pd.notna(row.get('class_boss_id')) else None,
+            'boss_id': AbstractProcessor.safe_int(row.get('class_boss_id')),
         }
 
         for field, new_value in fields_to_check.items():
@@ -344,7 +351,7 @@ class ClassProcessor:
             acad_term_id=acad_term_id,
             grading_basis=grading_basis_val,
             course_outline_url=row.get('course_outline_url') if pd.notna(row.get('course_outline_url')) else None,
-            boss_id=int(class_boss_id) if class_boss_id is not None else None,
+            boss_id=AbstractProcessor.safe_int(class_boss_id),
             warn_inaccuracy=warn_inaccuracy,
             created_at=now,
             updated_at=now
