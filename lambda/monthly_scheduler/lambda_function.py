@@ -385,33 +385,34 @@ def lambda_handler(event, context):
 
             retry_attempt = event.get("retry_attempt", 0)
 
-            # If this is a retry, skip when the run already succeeded (_SUCCESS)
-            # OR is still in progress (_STARTED without _SUCCESS).  This keeps
-            # +2h/+4h retries from spawning concurrent ECS tasks that would
-            # duplicate DB writes while the primary run is still going.
-            check_window = window or previous_window
-            if retry_attempt > 0 and check_window:
-                if _pipeline_already_succeeded(acad_term_id, check_window):
+            # A window run must not start when the pipeline already succeeded
+            # (_SUCCESS) or is still in progress (_STARTED without _SUCCESS).
+            # This guards every attempt, not just retries: a duplicate primary
+            # can fire (e.g. a recreated schedule) after the window completed.
+            # Cleanup runs (window is None) are exempt — they run after the
+            # last window on purpose.
+            if window:
+                if _pipeline_already_succeeded(acad_term_id, window):
                     logger.info(
-                        f"Pipeline already succeeded for {acad_term_id}/{check_window}, "
-                        f"skipping retry attempt {retry_attempt}."
+                        f"Pipeline already succeeded for {acad_term_id}/{window}, "
+                        f"skipping attempt {retry_attempt + 1}."
                     )
                     return {
                         "statusCode": 200,
                         "body": json.dumps({
-                            "message": f"Pipeline already succeeded for {acad_term_id}/{check_window}, skipped retry",
+                            "message": f"Pipeline already succeeded for {acad_term_id}/{window}, skipped",
                             "skipped": True,
                         })
                     }
-                if _pipeline_in_progress(acad_term_id, check_window):
+                if _pipeline_in_progress(acad_term_id, window):
                     logger.info(
-                        f"Pipeline still in progress for {acad_term_id}/{check_window}, "
-                        f"skipping retry attempt {retry_attempt}."
+                        f"Pipeline still in progress for {acad_term_id}/{window}, "
+                        f"skipping attempt {retry_attempt + 1}."
                     )
                     return {
                         "statusCode": 200,
                         "body": json.dumps({
-                            "message": f"Pipeline still in progress for {acad_term_id}/{check_window}, skipped retry",
+                            "message": f"Pipeline still in progress for {acad_term_id}/{window}, skipped",
                             "skipped": True,
                         })
                     }
@@ -513,6 +514,15 @@ def lambda_handler(event, context):
                         if tracker.is_tracked(tracking, term, name):
                             continue
                         if sched.schedule_exists(name):
+                            continue
+                        # A window whose pipeline already produced _SUCCESS
+                        # needs no schedule.  One-time schedules self-delete
+                        # after firing, so re-creating one for a completed
+                        # window is what produced duplicate "attempt 1" runs.
+                        if abbrev and _pipeline_already_succeeded(term, abbrev):
+                            logger.info(
+                                f"Skipping schedule for {term}/{abbrev}: pipeline already succeeded"
+                            )
                             continue
 
                         scrape_time = calculate_scrape_time(windows, i)
